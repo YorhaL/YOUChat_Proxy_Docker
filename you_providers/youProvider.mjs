@@ -722,6 +722,8 @@ class YouProvider {
             // 插入乱码（如果启用）
             previousMessages = insertGarbledText(previousMessages);
 
+            userQuery = '';
+
             // 检测并替换 <userQuery> 标签内容
             ({ previousMessages, userQuery } = extractAndReplaceUserQuery(previousMessages, userQuery));
 
@@ -930,7 +932,8 @@ class YouProvider {
         req_param.append("chat", JSON.stringify(userMessage));
         const url = "https://you.com/api/streamingSearch?" + req_param.toString();
         const enableDelayLogic = process.env.ENABLE_DELAY_LOGIC === 'true'; // 是否启用延迟逻辑
-
+        // 输出 userQuery
+        // console.log(`User Query: ${userQuery}`);
         if (enableDelayLogic) {
             await page.goto(`https://you.com/search?q=&fromSearchBar=true&tbm=youchat&chatMode=custom`, {waitUntil: "domcontentloaded"});
         }
