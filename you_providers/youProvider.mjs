@@ -33,8 +33,8 @@ class YouProvider {
         };  // 记录可用状态
         this.switchCounter = 0;
         this.requestsInCurrentMode = 0;
-        this.switchThreshold = this.getRandomSwitchThreshold();
         this.lastDefaultThreshold = 0; // 记录上一次default的阈值
+        this.switchThreshold = this.getRandomSwitchThreshold();
         this.networkMonitor = new NetworkMonitor();
         this.isTeamAccount = false; // 是否为Team账号
     }
@@ -43,8 +43,16 @@ class YouProvider {
         if (this.currentMode === "default") {
             return Math.floor(Math.random() * 3) + 1;
         } else {
-            // custom模式回合不小于上一次default
-            return Math.floor(Math.random() * (4 - this.lastDefaultThreshold)) + this.lastDefaultThreshold;
+            const minThreshold = this.lastDefaultThreshold || 1;
+            const maxThreshold = 4;
+            const range = maxThreshold - minThreshold;
+
+            if (range <= 0) {
+                this.lastDefaultThreshold = 1;
+            }
+            // 重新计算范围
+            const adjustedRange = maxThreshold - this.lastDefaultThreshold;
+            return Math.floor(Math.random() * adjustedRange) + this.lastDefaultThreshold;
         }
     }
 
