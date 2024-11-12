@@ -933,7 +933,7 @@ class YouProvider {
                 size_bytes: messageBuffer.length
             }]));
         }
-        if (userChatModeId === "custom") req_param.append("selectedAiModel", proxyModel);
+        req_param.append("selectedAiModel", proxyModel);
         req_param.append("enable_agent_clarification_questions", "false");
         req_param.append("traceId", `${traceId}|${msgid}|${new Date().toISOString()}`);
         req_param.append("q", userQuery);
