@@ -2,10 +2,25 @@ export function formatMessages(messages, proxyModel, randomFileName) {
     // 检查是否是 Claude 模型
     const isClaudeModel = proxyModel.toLowerCase().includes('claude');
 
+    // 启用特殊前缀
+    const USE_BACKSPACE_PREFIX = process.env.USE_BACKSPACE_PREFIX === 'true';
+
     // 定义角色映射
-    const roleFeatures = getRoleFeatures(isClaudeModel);
+    const roleFeatures = getRoleFeatures(isClaudeModel, USE_BACKSPACE_PREFIX);
 
     messages = convertRoles(messages, roleFeatures);
+
+    // 替换 content 中的角色
+    messages = replaceRolesInContent(messages, roleFeatures);
+
+    // 如果启用 clewd
+    const CLEWD_ENABLED = process.env.CLEWD_ENABLED === 'true';
+    if (CLEWD_ENABLED) {
+        messages = messages.map(message => {
+            message.content = xmlPlot(message.content, roleFeatures);
+            return message;
+        });
+    }
 
     const hasAIRound0 = messages.some(message => message.content.includes('<!-- AI Round 0 begins. -->'));
 
@@ -110,18 +125,19 @@ export function formatMessages(messages, proxyModel, randomFileName) {
     return processedMessages;
 }
 
-function getRoleFeatures(isClaudeModel) {
+function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
+    const prefix = useBackspacePrefix ? '\b' : '';
     if (isClaudeModel) {
         return {
-            systemRole: 'System',
-            userRole: 'Human',
-            assistantRole: 'Assistant'
+            systemRole: `${prefix}System`,
+            userRole: `${prefix}Human`,
+            assistantRole: `${prefix}Assistant`
         };
     } else {
         return {
-            systemRole: 'system',
-            userRole: 'user',
-            assistantRole: 'assistant'
+            systemRole: `${prefix}system`,
+            userRole: `${prefix}user`,
+            assistantRole: `${prefix}assistant`
         };
     }
 }
@@ -132,4 +148,158 @@ function convertRoles(messages, roleFeatures) {
         ...message,
         role: roleFeatures[message.role + 'Role'] || message.role
     }));
+}
+
+// 替换 content 中的角色定义
+function replaceRolesInContent(messages, roleFeatures) {
+    const roleNameMapping = {
+        'System:': roleFeatures.systemRole + ':',
+        'Human:': roleFeatures.userRole + ':',
+        'Assistant:': roleFeatures.assistantRole + ':',
+        'system:': roleFeatures.systemRole + ':',
+        'human:': roleFeatures.userRole + ':',
+        'user:': roleFeatures.userRole + ':',
+        'assistant:': roleFeatures.assistantRole + ':'
+    };
+
+    // 转义正则的特殊字符
+    function escapeRegExp(string) {
+        return string.replace(/[\b.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // 使用已转义的角色生成正则
+    const escapedRoleNames = Object.keys(roleNameMapping).map(name => escapeRegExp(name));
+
+    // 确保包含冒号并正确转义特殊字符
+    const roleNamesPattern = new RegExp(`\\b(${escapedRoleNames.join('|')})`, 'g');
+
+    return messages.map(message => {
+        let newContent = message.content;
+
+        // 替换内容中的角色
+        newContent = newContent.replace(roleNamesPattern, match => roleNameMapping[match]);
+
+        return {
+            ...message,
+            content: newContent
+        };
+    });
+}
+
+function xmlPlot(content, roleFeatures) {
+    let regexLog = '';
+    // 第一次正则替换
+    content = xmlPlot_regex(content, 1, regexLog);
+
+    // 第一次角色合并
+    const mergeTag = {
+        all: !content.includes('<|Merge Disable|>'),
+        system: !content.includes('<|Merge System Disable|>'),
+        human: !content.includes('<|Merge Human Disable|>'),
+        assistant: !content.includes('<|Merge Assistant Disable|>')
+    };
+    content = xmlPlot_merge(content, mergeTag, roleFeatures);
+
+    // 自定义插入处理
+    const escapeRegExp = (string) => string.replace(/[\b.*+?^${}()|[\]\\]/g, '\\$&');
+    const humanLabelRaw = `${roleFeatures.userRole}:`;
+    const assistantLabelRaw = `${roleFeatures.assistantRole}:`;
+    const humanLabel = escapeRegExp(humanLabelRaw);
+    const assistantLabel = escapeRegExp(assistantLabelRaw);
+
+    let splitContent = content.split(new RegExp(`\\n\\n(?=${humanLabel}|${assistantLabel})`, 'g'));
+    let match;
+    while ((match = /<@(\d+)>(.*?)<\/@\1>/gs.exec(content)) !== null) {
+        let index = splitContent.length - parseInt(match[1]) - 1;
+        if (index >= 0) {
+            splitContent[index] += '\n\n' + match[2];
+        }
+        content = content.replace(match[0], '');
+    }
+    content = splitContent.join('\n\n').replace(/<@(\d+)>.*?<\/@\1>/gs, '');
+
+    // 第二次正则替换
+    content = xmlPlot_regex(content, 2, regexLog);
+
+    // 第二次角色合并
+    content = xmlPlot_merge(content, mergeTag, roleFeatures);
+
+    // Plain Prompt 处理
+    const humanLabelPattern = new RegExp(`\\n\\n${humanLabel}`, 'g');
+    let segcontentHuman = content.split(humanLabelPattern);
+    let segcontentlastIndex = segcontentHuman.length - 1;
+    if (segcontentlastIndex >= 2 && segcontentHuman[segcontentlastIndex].includes('<|Plain Prompt Enable|>') && !content.includes(`\n\nPlainPrompt:`)) {
+        content = segcontentHuman.slice(0, segcontentlastIndex).join(`\n\n${humanLabelRaw}`) + `\n\nPlainPrompt:` + segcontentHuman.slice(segcontentlastIndex).join(`\n\n${humanLabelRaw}`).replace(new RegExp(`\\n\\n${humanLabel}\\s*PlainPrompt:`, 'g'), '\n\nPlainPrompt:');
+    }
+
+    // 第三次正则替换
+    content = xmlPlot_regex(content, 3, regexLog);
+
+    // 清理和格式化
+    content = content.replace(/<regex( +order *= *\d)?>.*?<\/regex>/gm, '')
+        .replace(/\r\n|\r/gm, '\n')
+        .replace(/\s*<\|curtail\|>\s*/g, '\n')
+        .replace(/\s*<\|join\|>\s*/g, '')
+        .replace(/\s*<\|space\|>\s*/g, ' ')
+        .replace(new RegExp(`\\s*\\n\\n(${humanLabel}|${assistantLabel})\\s+`, 'g'), '\n\n$1 ')
+        .replace(/<\|(\\.*?)\|>/g, function (match, p1) {
+            try {
+                return JSON.parse(`"${p1.replace(/\\?"/g, '\\"')}"`);
+            } catch { return match }
+        });
+
+    // 确保格式正确
+    content = content.replace(/\s*<\|(?!padtxt).*?\|>\s*/g, '\n\n').trim()
+        .replace(/(?<=\n)\n(?=\n)/g, '');
+
+    return content;
+}
+
+function xmlPlot_regex(content, order, regexLog) {
+    let matches = content.match(new RegExp(`<regex(?: +order *= *${order})?> *"(/?)(.*?)\\1(.*?)" *: *"(.*?)" *</regex>`, 'gm'));
+    if (matches) {
+        matches.forEach(match => {
+            try {
+                const reg = /<regex(?: +order *= *\d)?> *"(\/?)(.*?)\1(.*?)" *: *"(.*?)" *<\/regex>/.exec(match);
+                regexLog += match + '\n';
+                content = content.replace(new RegExp(reg[2], reg[3]), JSON.parse(`"${reg[4].replace(/\\?"/g, '\\"')}"`));
+            } catch (err) {
+                console.log(`Regex error: ` + match + '\n' + err);
+            }
+        });
+    }
+    return content;
+}
+
+function xmlPlot_merge(content, mergeTag, roleFeatures) {
+    const escapeRegExp = (string) => string.replace(/[\b.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const humanLabelRaw = `${roleFeatures.userRole}:`;
+    const assistantLabelRaw = `${roleFeatures.assistantRole}:`;
+    const humanLabel = escapeRegExp(humanLabelRaw);
+    const assistantLabel = escapeRegExp(assistantLabelRaw);
+
+    if (/(\n\n|^\s*)xmlPlot:\s*/.test(content)) {
+        content = content.replace(/(\n\n|^\s*)xmlPlot: */g, mergeTag.system && mergeTag.human && mergeTag.all ? `\n\n${humanLabelRaw} ` : '$1');
+    }
+
+    // 合并 Human 段落
+    if (mergeTag.all && mergeTag.human) {
+        const humanRegex = new RegExp(`(?:\\n\\n|^\\s*)${humanLabel}(.*?)(?=\\n\\n(?:${assistantLabel}|$))`, 'gs');
+        content = content.replace(humanRegex, (match, p1) => {
+            const innerHumanLabelRegex = new RegExp(`\\n\\n${humanLabel}\\s*`, 'g');
+            return `\n\n${humanLabelRaw}` + p1.replace(innerHumanLabelRegex, '\n\n');
+        });
+    }
+
+    // 合并 Assistant 段落
+    if (mergeTag.all && mergeTag.assistant) {
+        const assistantRegex = new RegExp(`(?:\\n\\n|^\\s*)${assistantLabel}(.*?)(?=\\n\\n(?:${humanLabel}|$))`, 'gs');
+        content = content.replace(assistantRegex, (match, p1) => {
+            const innerAssistantLabelRegex = new RegExp(`\\n\\n${assistantLabel}\\s*`, 'g');
+            return `\n\n${assistantLabelRaw}` + p1.replace(innerAssistantLabelRegex, '\n\n');
+        });
+    }
+
+    return content;
 }
