@@ -66,8 +66,14 @@ set ENABLE_MODE_ROTATION=false
 REM 是否启用隐身模式
 set INCOGNITO_MODE=false
 
+REM 设置伪造真role (如果启用，必须使用txt格式上传)
+set USE_BACKSPACE_PREFIX=false
+
 REM 设置上传文件格式 (docx 或 txt) gpt_4o 使用txt可能更好破限
 set UPLOAD_FILE_FORMAT=docx
+
+REM 设置是否启用 CLEWD 后处理
+set CLEWD_ENABLED=false
 
 REM ---------------------------------------------------
 REM 控制是否在开头插入乱码
