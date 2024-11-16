@@ -5,6 +5,7 @@ import localtunnel from "localtunnel";
 import ngrok from 'ngrok';
 import {v4 as uuidv4} from "uuid";
 import './proxyAgent.mjs';
+import SessionManager from './sessionManager.mjs';
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -58,6 +59,9 @@ try {
 const provider = new YouProvider(config);
 await provider.init(config);
 
+// 初始化 SessionManager
+const sessionManager = new SessionManager(provider.provider);
+
 // handle preflight request
 app.use((req, res, next) => {
     if (req.method === "OPTIONS") {
@@ -109,25 +113,9 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
 
         console.log("message length:" + jsonBody.messages.length);
 
-        // 获取当前 Provider 实例
-        const currentProvider = provider.provider;
-
-        // 获取会话列表
-        const sessions = currentProvider.sessions;
-
         // 检查是否有可用的会话
-        if (!sessions || Object.keys(sessions).length === 0) {
-            console.error('没有可用的会话，请检查 Provider 的初始化是否成功，或检查配置文件。');
-            res.write(JSON.stringify({
-                error: 'No available sessions.',
-            }));
-            res.end();
-            return;
-        }
-
-        // 随机选择一个会话
-        let randomSession = Object.keys(sessions)[Math.floor(Math.random() * Object.keys(sessions).length)];
-        console.log("Using session " + randomSession);
+        const selectedSession = sessionManager.getSessionByStrategy('random');
+        console.log("Using session " + selectedSession);
 
         // 尝试映射模型
         if (jsonBody.model && modelMappping[jsonBody.model]) {
@@ -142,7 +130,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
         // 调用 provider 获取回复
         try {
             const {completion, cancel} = await provider.getCompletion({
-                username: randomSession,
+                username: selectedSession,
                 messages: jsonBody.messages,
                 stream: !!jsonBody.stream,
                 proxyModel: jsonBody.model,
@@ -354,25 +342,9 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
         }
         console.log("message length:" + jsonBody.messages.length);
 
-        // 获取当前 Provider 实例
-        const currentProvider = provider.provider;
-
-        // 获取会话列表
-        const sessions = currentProvider.sessions;
-
         // 检查是否有可用的会话
-        if (!sessions || Object.keys(sessions).length === 0) {
-            console.error('没有可用的会话，请检查 Provider 的初始化是否成功，或检查配置文件。');
-            res.write(JSON.stringify({
-                error: 'No available sessions.',
-            }));
-            res.end();
-            return;
-        }
-
-        // 随机选择一个会话
-        let randomSession = Object.keys(sessions)[Math.floor(Math.random() * Object.keys(sessions).length)];
-        console.log("Using session " + randomSession);
+        const selectedSession = sessionManager.getSessionByStrategy('random');
+        console.log("Using session " + selectedSession);
 
         // decide which model to use
         let proxyModel;
@@ -388,7 +360,7 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
         // call provider to get completion
         try {
             const {completion, cancel} = await provider.getCompletion({
-                username: randomSession,
+                username: selectedSession,
                 messages: jsonBody.messages,
                 stream: !!jsonBody.stream,
                 proxyModel: proxyModel,
