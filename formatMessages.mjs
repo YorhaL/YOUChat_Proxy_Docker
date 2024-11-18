@@ -104,7 +104,7 @@ export function formatMessages(messages, proxyModel, randomFileName) {
                 roundInfo = `最新${roleFeatures.userRole}:(${userRoundCounter})回合|${roleFeatures.assistantRole}:(${userRoundCounter + 1})回合开始，参考 <Human_inputs>，关联所有记忆重构语境时空关系的碎片:\n`;
             } else {
                 const nextAssistantRound = userRoundCounter + 1;
-                roundInfo = `{{\\ 第 ${roleFeatures.userRole} = 回合${userRoundCounter}|${roleFeatures.assistantRole} = 回合${nextAssistantRound} 开始建立记忆区: [${descriptionPointCounter}]\n`;
+                roundInfo = `{{ 第 ${roleFeatures.userRole} = 回合${userRoundCounter}|${roleFeatures.assistantRole} = 回合${nextAssistantRound} 开始建立记忆区: [${descriptionPointCounter}]\n`;
             }
             message.content = roundInfo + message.content;
         } else if (message.role === roleFeatures.assistantRole && i < lastUserIndex) {
@@ -115,7 +115,7 @@ export function formatMessages(messages, proxyModel, randomFileName) {
             }
 
             if (message.content.includes('<CHAR_turn>')) {
-                message.content += `\n\n\\记忆区 [${descriptionPointCounter}] 结束}}`;
+                message.content += `\n}}\n<-- 记忆区 [${descriptionPointCounter}] 结束 -->`;
             }
         }
 
