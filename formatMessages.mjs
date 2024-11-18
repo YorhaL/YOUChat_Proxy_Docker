@@ -86,7 +86,7 @@ export function formatMessages(messages, proxyModel, randomFileName) {
         if (message.content.includes('<!-- AI Round 0 begins. -->')) {
             processedMessages.push({
                 role: message.role,
-                content: message.content.replace('<!-- AI Round 0 begins. -->', '--------------------<建立锚点开始处>--------------------\n<!-- AI Round 0 begins. -->')
+                content: message.content.replace('<!-- AI Round 0 begins. -->', '<建立记忆区>\n<!-- AI Round 0 begins. -->')
             });
             continue;
         }
@@ -101,10 +101,10 @@ export function formatMessages(messages, proxyModel, randomFileName) {
 
             let roundInfo = '';
             if (i === lastUserIndex) {
-                roundInfo = `{{最新${roleFeatures.userRole}:(${userRoundCounter})回合|${roleFeatures.assistantRole}:(${userRoundCounter + 1})回合开始，基于上回(${descriptionPointCounter - 1}(${roleFeatures.userRole}${userRoundCounter - 1}|${roleFeatures.assistantRole}${userRoundCounter - 1}))中的历史锚点内的\`${roleFeatures.assistantRole}:\`发言末尾衔接，叙事创作时不要只关注最近故事动向，尽可能的记住多个历史锚点中的"${roleFeatures.assistantRole}:..."故事内容，保持思路清晰来响应下一个回复:}}\n`;
+                roundInfo = `最新${roleFeatures.userRole}:(${userRoundCounter})回合|${roleFeatures.assistantRole}:(${userRoundCounter + 1})回合开始，参考 <Human_inputs>，关联所有记忆重构语境时空关系的碎片:\n`;
             } else {
                 const nextAssistantRound = userRoundCounter + 1;
-                roundInfo = `{{历史第 ${roleFeatures.userRole} = 回合${userRoundCounter}|${roleFeatures.assistantRole} = 回合${nextAssistantRound} 开始，标记锚点:[${descriptionPointCounter}]}}\n`;
+                roundInfo = `{{\\ 第 ${roleFeatures.userRole} = 回合${userRoundCounter}|${roleFeatures.assistantRole} = 回合${nextAssistantRound} 开始建立记忆区: [${descriptionPointCounter}]\n`;
             }
             message.content = roundInfo + message.content;
         } else if (message.role === roleFeatures.assistantRole && i < lastUserIndex) {
@@ -115,7 +115,7 @@ export function formatMessages(messages, proxyModel, randomFileName) {
             }
 
             if (message.content.includes('<CHAR_turn>')) {
-                message.content += `\n--------------------<历史锚点[${descriptionPointCounter}]结束>--------------------`;
+                message.content += `\n\n\\记忆区 [${descriptionPointCounter}] 结束}}`;
             }
         }
 
