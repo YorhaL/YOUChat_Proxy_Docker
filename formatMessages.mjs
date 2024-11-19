@@ -165,7 +165,7 @@ function convertRoles(messages, roleFeatures) {
 
 // 转义正则特殊字符
 function escapeRegExp(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return string.replace(/[\b.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // 替换 content 角色定义
