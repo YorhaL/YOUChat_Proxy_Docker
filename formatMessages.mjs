@@ -125,73 +125,80 @@ export function formatMessages(messages, proxyModel, randomFileName) {
     return processedMessages;
 }
 
-function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
-    const prefix = useBackspacePrefix ? '\u0008' : '';
-    if (isClaudeModel) {
-        return {
-            systemRole: `${prefix}System`,
-            userRole: `${prefix}Human`,
-            assistantRole: `${prefix}Assistant`,
-            prefix
-        };
-    } else {
-        return {
-            systemRole: `${prefix}system`,
-            userRole: `${prefix}user`,
-            assistantRole: `${prefix}assistant`,
-            prefix
-        };
-    }
+// 转义特殊字符
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// 获取角色特征
+function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
+    const prefix = useBackspacePrefix ? '\u0008' : '';
+    const systemRole = `${prefix}${isClaudeModel ? 'System' : 'system'}`;
+    const userRole = `${prefix}${isClaudeModel ? 'Human' : 'user'}`;
+    const assistantRole = `${prefix}${isClaudeModel ? 'Assistant' : 'assistant'}`;
 
+    return {
+        systemRole,
+        userRole,
+        assistantRole,
+        prefix
+    };
+}
 
 // 转换角色
 function convertRoles(messages, roleFeatures) {
-    const { prefix } = roleFeatures;
+    const { prefix, systemRole, userRole, assistantRole } = roleFeatures;
+    const roleMap = {
+        'system': systemRole,
+        'user': userRole,
+        'human': userRole,
+        'assistant': assistantRole
+    };
 
     return messages.map(message => {
-        // 检查当前角色名是否已经包含前缀
-        const currentRole = message.role;
-        const newRole = roleFeatures[`${currentRole}Role`] || currentRole;
+        let currentRole = message.role;
 
         if (currentRole.startsWith(prefix)) {
-            return { ...message, role: currentRole };
+            // 包含前缀不需要转换
+            return message;
         } else {
+            const roleKey = currentRole.toLowerCase();
+            const newRole = roleMap[roleKey] || currentRole;
             return { ...message, role: newRole };
         }
     });
 }
 
-// 转义正则特殊字符
-function escapeRegExp(string) {
-    return string.replace(/[\b.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// 替换 content 角色定义
+// 替换 content 中的角色定义
 function replaceRolesInContent(messages, roleFeatures) {
-    const { prefix } = roleFeatures;
+    const prefix = roleFeatures.prefix;
 
-    // 构建角色名称列表
-    const roles = ['System', 'Human', 'Assistant', 'system', 'human', 'user', 'assistant'];
-    const rolePatterns = roles.map(role => {
-        const escapedRole = escapeRegExp(role);
-        const escapedPrefix = escapeRegExp(prefix);
-        return `(${escapedPrefix}?${escapedRole}:)`;
+    // 角色名称映射
+    const roleMap = {
+        'System:': roleFeatures.systemRole + ':',
+        'system:': roleFeatures.systemRole + ':',
+        'Human:': roleFeatures.userRole + ':',
+        'human:': roleFeatures.userRole + ':',
+        'user:': roleFeatures.userRole + ':',
+        'Assistant:': roleFeatures.assistantRole + ':',
+        'assistant:': roleFeatures.assistantRole + ':',
+    };
+
+    // 避免重复添加前缀
+    Object.values(roleMap).forEach(label => {
+        roleMap[label] = label;
     });
-    const roleRegex = new RegExp(rolePatterns.join('|'), 'g');
+
+    // 仅匹配角色标签
+    const escapedLabels = Object.keys(roleMap).map(label => escapeRegExp(label));
+    const roleNamesPattern = new RegExp(`(${escapedLabels.join('|')})`, 'g');
 
     return messages.map(message => {
         let newContent = message.content;
 
-        newContent = newContent.replace(roleRegex, (match) => {
-            if (match.startsWith(prefix)) {
-                return match;
-            } else {
-                const roleName = match.replace(/[:\s]/g, '').replace(prefix, '');
-                const mappedRole = roleFeatures[`${roleName.toLowerCase()}Role`] || match;
-                return mappedRole + ':';
-            }
+        // 替换内容中角色
+        newContent = newContent.replace(roleNamesPattern, (match) => {
+            return roleMap[match] || match;
         });
 
         return {
