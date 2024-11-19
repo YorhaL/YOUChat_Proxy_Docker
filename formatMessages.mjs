@@ -163,15 +163,20 @@ function convertRoles(messages, roleFeatures) {
     });
 }
 
-// 替换 content 中的角色定义
+// 转义正则特殊字符
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 替换 content 角色定义
 function replaceRolesInContent(messages, roleFeatures) {
     const { prefix } = roleFeatures;
 
     // 构建角色名称列表
     const roles = ['System', 'Human', 'Assistant', 'system', 'human', 'user', 'assistant'];
     const rolePatterns = roles.map(role => {
-        const escapedRole = role.replace(/[\^$\\.*+?()[\]{}|]/g, '\\$&');
-        const escapedPrefix = prefix.replace(/[\^$\\.*+?()[\]{}|]/g, '\\$&');
+        const escapedRole = escapeRegExp(role);
+        const escapedPrefix = escapeRegExp(prefix);
         return `(${escapedPrefix}?${escapedRole}:)`;
     });
     const roleRegex = new RegExp(rolePatterns.join('|'), 'g');
