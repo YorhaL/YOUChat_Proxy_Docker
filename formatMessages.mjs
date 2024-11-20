@@ -171,8 +171,6 @@ function convertRoles(messages, roleFeatures) {
 
 // 替换 content 中的角色定义
 function replaceRolesInContent(messages, roleFeatures) {
-    const prefix = roleFeatures.prefix;
-
     // 角色名称映射
     const roleMap = {
         'System:': roleFeatures.systemRole + ':',
