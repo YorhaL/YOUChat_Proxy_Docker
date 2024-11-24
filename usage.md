@@ -93,7 +93,7 @@
 
 #### 步骤 2：启动服务并手动登录
 
-1. **重命名 `config.example.mjs` 文件，将文件另存为 `config.mjs`。
+1. **重命名 `config.example.mjs` 文件，将文件另存为 `config.mjs`。**
 
 2. **双击运行 `start.bat`。**
 
