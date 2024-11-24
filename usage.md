@@ -119,6 +119,7 @@
 set http_proxy=http://127.0.0.1:7890
 set https_proxy=http://127.0.0.1:7890
 ```
+*(启动浏览器闪退时，移除代理)*
 
 This project uses the local Chrome browser, which will automatically read and use the system proxy settings.
 
