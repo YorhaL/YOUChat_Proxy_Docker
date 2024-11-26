@@ -1048,7 +1048,6 @@ class YouProvider {
         req_param.append("selectedChatMode", userChatModeId);
         if (uploadedFile || uploadedImage) {
             const sources = [];
-            // 添加图片信息
             if (uploadedImage) {
                 sources.push({
                     source_type: "user_file",
@@ -1057,7 +1056,6 @@ class YouProvider {
                     size_bytes: Buffer.byteLength(lastImage.base64Data, 'base64'),
                 });
             }
-            // 添加文件信息
             if (uploadedFile) {
                 sources.push({
                     source_type: "user_file",
