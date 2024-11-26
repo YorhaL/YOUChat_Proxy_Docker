@@ -1062,7 +1062,7 @@ class YouProvider {
                 sources.push({
                     source_type: "user_file",
                     user_filename: randomFileName,
-                    filename: uploadedFile.filename, // 上传成功后 you.com 返回的 filename
+                    filename: uploadedFile.filename,
                     size_bytes: messageBuffer.length,
                 });
             }
