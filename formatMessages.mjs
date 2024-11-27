@@ -147,7 +147,7 @@ function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
 
 // 转换角色
 function convertRoles(messages, roleFeatures) {
-    const { prefix, systemRole, userRole, assistantRole } = roleFeatures;
+    const { systemRole, userRole, assistantRole } = roleFeatures;
     const roleMap = {
         'system': systemRole,
         'user': userRole,
@@ -158,7 +158,7 @@ function convertRoles(messages, roleFeatures) {
     return messages.map(message => {
         let currentRole = message.role;
 
-        if (currentRole.startsWith(prefix)) {
+        if (currentRole.startsWith('\u0008')) {
             // 包含前缀不需要转换
             return message;
         } else {
