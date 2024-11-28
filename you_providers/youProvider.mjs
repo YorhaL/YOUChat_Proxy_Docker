@@ -9,7 +9,6 @@ import {exec} from 'child_process';
 import '../proxyAgent.mjs';
 import {formatMessages} from '../formatMessages.mjs';
 import NetworkMonitor from '../networkMonitor.mjs';
-import robot from 'robotjs';
 import {detectBrowser} from '../utils/browserDetector.mjs';
 import {insertGarbledText} from './garbledText.mjs';
 import * as imageStorage from "../imageStorage.mjs";
@@ -189,19 +188,6 @@ class YouProvider {
                     const teamElement = document.querySelector('div._16bctla1 p._16bctla2');
                     return teamElement && teamElement.textContent === 'Your Team';
                 });
-
-                if (this.isTeamAccount) {
-                    console.log('检测到 Team 账号');
-                    await sleep(3000);
-                    await page.goto("https://you.com/settings/team-details", {timeout: timeout});
-                    await sleep(3000);
-                    // 获取浏览器窗口标题
-                    const title = await page.title();
-                    // 将浏览器窗口切换到前台
-                    await this.focusBrowserWindow(title);
-                    robot.keyTap('r', 'control');
-                    await sleep(5000);
-                }
 
                 // 如果遇到盾了就多等一段时间
                 const pageContent = await page.content();
