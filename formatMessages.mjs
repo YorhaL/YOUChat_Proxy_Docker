@@ -6,7 +6,9 @@ export function formatMessages(messages, proxyModel, randomFileName) {
     const USE_BACKSPACE_PREFIX = process.env.USE_BACKSPACE_PREFIX === 'true';
 
     // 定义角色映射
-    const roleFeatures = getRoleFeatures(isClaudeModel, USE_BACKSPACE_PREFIX);
+    const roleFeatures = getRoleFeatures(messages, isClaudeModel, USE_BACKSPACE_PREFIX);
+
+    messages = removeCustomRoleDefinitions(messages);
 
     messages = convertRoles(messages, roleFeatures);
 
@@ -131,11 +133,39 @@ function escapeRegExp(string) {
 }
 
 // 获取角色特征
-function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
-    const prefix = useBackspacePrefix ? '\u0008' : '';
-    const systemRole = `${prefix}${isClaudeModel ? 'System' : 'system'}`;
-    const userRole = `${prefix}${isClaudeModel ? 'Human' : 'user'}`;
-    const assistantRole = `${prefix}${isClaudeModel ? 'Assistant' : 'assistant'}`;
+function getRoleFeatures(messages, isClaudeModel, useBackspacePrefix) {
+    let prefix = useBackspacePrefix ? '\u0008' : '';
+    let systemRole = `${prefix}${isClaudeModel ? 'System' : 'system'}`;
+    let userRole = `${prefix}${isClaudeModel ? 'Human' : 'user'}`;
+    let assistantRole = `${prefix}${isClaudeModel ? 'Assistant' : 'assistant'}`;
+
+    // 匹配自定义角色
+    const rolePattern = /\[\|(\w+)::(.*?)\|\]/g;
+    let customRoles = {};
+    messages.forEach(message => {
+        let content = message.content;
+        let match;
+        while ((match = rolePattern.exec(content)) !== null) {
+            const roleKey = match[1]; // 'system', 'user', 'assistant'
+            customRoles[roleKey.toLowerCase()] = match[2];
+        }
+    });
+    
+    if (Object.keys(customRoles).length > 0) {
+        prefix = '';
+
+        if (customRoles['system']) {
+            systemRole = customRoles['system'];
+        }
+
+        if (customRoles['user']) {
+            userRole = customRoles['user'];
+        }
+
+        if (customRoles['assistant']) {
+            assistantRole = customRoles['assistant'];
+        }
+    }
 
     return {
         systemRole,
@@ -143,6 +173,19 @@ function getRoleFeatures(isClaudeModel, useBackspacePrefix) {
         assistantRole,
         prefix
     };
+}
+
+// 移除 messages 自定义角色格式
+function removeCustomRoleDefinitions(messages) {
+    const rolePattern = /\[\|\w+::.*?\|]/g;
+
+    return messages.map(message => {
+        let newContent = message.content.replace(rolePattern, '');
+        return {
+            ...message,
+            content: newContent
+        };
+    });
 }
 
 // 转换角色
@@ -171,33 +214,37 @@ function convertRoles(messages, roleFeatures) {
 
 // 替换 content 中的角色定义
 function replaceRolesInContent(messages, roleFeatures) {
-    // 角色名称映射
+    // 避免重复添加
     const roleMap = {
-        'System:': roleFeatures.systemRole + ':',
-        'system:': roleFeatures.systemRole + ':',
-        'Human:': roleFeatures.userRole + ':',
-        'human:': roleFeatures.userRole + ':',
-        'user:': roleFeatures.userRole + ':',
-        'Assistant:': roleFeatures.assistantRole + ':',
-        'assistant:': roleFeatures.assistantRole + ':',
+        'System:': roleFeatures.systemRole.replace(roleFeatures.prefix, '') + ':',
+        'system:': roleFeatures.systemRole.replace(roleFeatures.prefix, '') + ':',
+        'Human:': roleFeatures.userRole.replace(roleFeatures.prefix, '') + ':',
+        'human:': roleFeatures.userRole.replace(roleFeatures.prefix, '') + ':',
+        'user:': roleFeatures.userRole.replace(roleFeatures.prefix, '') + ':',
+        'Assistant:': roleFeatures.assistantRole.replace(roleFeatures.prefix, '') + ':',
+        'assistant:': roleFeatures.assistantRole.replace(roleFeatures.prefix, '') + ':',
     };
 
-    // 避免重复添加前缀
-    Object.values(roleMap).forEach(label => {
-        roleMap[label] = label;
-    });
-
-    // 仅匹配角色标签
+    // 构建角色正则
     const escapedLabels = Object.keys(roleMap).map(label => escapeRegExp(label));
-    const roleNamesPattern = new RegExp(`(${escapedLabels.join('|')})`, 'g');
+    const prefixPattern = roleFeatures.prefix ? escapeRegExp(roleFeatures.prefix) : '';
+
+    const roleNamesPattern = new RegExp(`(\\n\\n)(${prefixPattern})?(${escapedLabels.join('|')})`, 'g');
 
     return messages.map(message => {
         let newContent = message.content;
 
-        // 替换内容中角色
-        newContent = newContent.replace(roleNamesPattern, (match) => {
-            return roleMap[match] || match;
-        });
+        if (typeof newContent === 'string') {
+            // 仅替换段落开头角色
+            newContent = newContent.replace(roleNamesPattern, (match, p1, p2, p3) => {
+                const newRoleLabel = roleMap[p3] || p3;
+                const prefixToUse = p2 !== undefined ? p2 : roleFeatures.prefix;
+                return p1 + (prefixToUse || '') + newRoleLabel;
+            });
+        } else {
+            console.warn('message.content is not a string:', newContent);
+            newContent = '';
+        }
 
         return {
             ...message,
