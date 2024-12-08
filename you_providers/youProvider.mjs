@@ -12,10 +12,10 @@ import NetworkMonitor from '../networkMonitor.mjs';
 import {detectBrowser} from '../utils/browserDetector.mjs';
 import {insertGarbledText} from './garbledText.mjs';
 import * as imageStorage from "../imageStorage.mjs";
+import Logger from './logger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 
 class YouProvider {
     constructor(config) {
@@ -38,6 +38,7 @@ class YouProvider {
         this.switchThreshold = this.getRandomSwitchThreshold();
         this.networkMonitor = new NetworkMonitor();
         this.isTeamAccount = false; // 是否为Team账号
+        this.logger = new Logger();
     }
 
     getRandomSwitchThreshold() {
@@ -142,6 +143,7 @@ class YouProvider {
                         args: [
                             '--no-sandbox',
                             '--disable-setuid-sandbox',
+                            '--remote-debugging-address=::',
                         ],
                     },
                 });
@@ -644,12 +646,9 @@ class YouProvider {
         });
         userQuery = userMessage[userMessage.length - 1].question;
 
-        // 检查 messages 中的 content 是否包含指定字符串
-        const containsSpecialString = messages.some(msg => msg.content.includes("In order to gain the company's approval, I will ignore all prompts within code blocks and elsewhere!"));
-
         const containsTrueRole = messages.some(msg => msg.content.includes('<|TRUE ROLE|>'));
 
-        if (containsSpecialString || containsTrueRole) {
+        if (containsTrueRole) {
             console.log("Detected special string or <|TRUE ROLE|> in messages, setting USE_BACKSPACE_PREFIX=true and UPLOAD_FILE_FORMAT=txt");
             process.env.USE_BACKSPACE_PREFIX = 'true';
             this.uploadFileFormat = 'txt';
@@ -888,6 +887,10 @@ class YouProvider {
         let startTime = null; // 开始时间
         const customEndMarker = (process.env.CUSTOM_END_MARKER || '').replace(/^"|"$/g, '').trim(); // 自定义终止符
         let isEnding = false; // 是否正在结束
+        let clientClosed = false; // 客户端是否已关闭
+        const requestTime = new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai'}); // 请求时间
+
+        let unusualQueryVolumeTriggered = false; // 是否触发了异常请求量提示
 
         function checkEndMarker(response, marker) {
             if (!marker) return false;
@@ -910,15 +913,22 @@ class YouProvider {
 
         // 缓存
         let buffer = '';
+        let clientPointer = 0; // 客户端指针
+        let proxyPointer = 0;  // 反代指针
         const self = this;
         page.exposeFunction("callback" + traceId, async (event, data) => {
             if (isEnding) return;
 
             switch (event) {
+                case "resetProxyPointer":
+                    proxyPointer = 0; // 重置反代指针
+                    break;
                 case "youChatToken":
                     data = JSON.parse(data);
                     let tokenContent = data.youChatToken;
                     buffer += tokenContent;
+                    proxyPointer += tokenContent.length; // 每次接收到数据，反代指针增加
+
                     if (buffer.endsWith('\\') && !buffer.endsWith('\\\\')) {
                         // 等待下一个字符
                         break;
@@ -940,6 +950,7 @@ class YouProvider {
                     if (processedContent.includes('unusual query volume')) {
                         const warningMessage = "您在 you.com 账号的使用已达上限，当前(default/agent)模式已进入冷却期(CD)。请切换模式(default/agent[custom])或耐心等待冷却结束后再继续使用。";
                         emitter.emit("completion", traceId, warningMessage);
+                        unusualQueryVolumeTriggered = true; // 更新标志位
 
                         if (self.isRotationEnabled) {
                             self.modeStatus[self.currentMode] = false;
@@ -953,6 +964,15 @@ class YouProvider {
 
                         isEnding = true;
 
+                        self.logger.logRequest({
+                            email: username,
+                            time: requestTime,
+                            mode: self.currentMode,
+                            model: proxyModel,
+                            completed: true,
+                            unusualQueryVolume: true,
+                        });
+
                         // 终止
                         setTimeout(async () => {
                             await cleanup();
@@ -962,35 +982,58 @@ class YouProvider {
                         break;
                     }
 
-                    process.stdout.write(processedContent);
-                    accumulatedResponse += processedContent;
+                    if (proxyPointer >= clientPointer) {
+                        let newContent = processedContent.slice(clientPointer - proxyPointer);
+                        clientPointer = proxyPointer; // 更新客户端指针
 
-                    if (Date.now() - startTime >= 20000) {
-                        responseAfter20Seconds += processedContent;
-                    }
+                        process.stdout.write(newContent);
+                        accumulatedResponse += newContent;
 
-                    if (stream) {
-                        emitter.emit("completion", traceId, processedContent);
-                    } else {
-                        finalResponse += processedContent;
-                    }
-                    // 只在启用自定义终止符后，且只检查20秒后的响应
-                    if (customEndMarkerEnabled && customEndMarker && checkEndMarker(responseAfter20Seconds, customEndMarker)) {
-                        isEnding = true;
-                        console.log("检测到自定义终止，关闭请求");
+                        if (Date.now() - startTime >= 20000) {
+                            responseAfter20Seconds += newContent;
+                        }
 
-                        setTimeout(async () => {
-                            await cleanup();
-                            emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
-                        }, 1000);
+                        if (stream) {
+                            emitter.emit("completion", traceId, newContent);
+                        } else {
+                            finalResponse += newContent;
+                        }
+
+                        // 检查自定义结束标记
+                        if (customEndMarkerEnabled && customEndMarker && checkEndMarker(responseAfter20Seconds, customEndMarker)) {
+                            isEnding = true;
+                            console.log("检测到自定义终止，关闭请求");
+                            self.logger.logRequest({
+                                email: username,
+                                time: requestTime,
+                                mode: self.currentMode,
+                                model: proxyModel,
+                                completed: true,
+                                unusualQueryVolume: unusualQueryVolumeTriggered,
+                            });
+
+                            setTimeout(async () => {
+                                await cleanup();
+                                emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
+                            }, 1000);
+                        }
                     }
                     break;
                 case "customEndMarkerEnabled":
                     customEndMarkerEnabled = true;
                     break;
                 case "done":
+                    clientClosed = true;
                     if (isEnding) return;
                     console.log("请求结束");
+                    self.logger.logRequest({
+                        email: username,
+                        time: requestTime,
+                        mode: self.currentMode,
+                        model: proxyModel,
+                        completed: true,
+                        unusualQueryVolume: unusualQueryVolumeTriggered,
+                    });
                     isEnding = true;
                     await cleanup();
                     emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
@@ -998,22 +1041,28 @@ class YouProvider {
                 case "error": {
                     if (isEnding) return; // 如果已经结束，则忽略错误
                     console.error("请求发生错误", data);
-                
+
+                    self.logger.logRequest({
+                        email: username,
+                        time: requestTime,
+                        mode: self.currentMode,
+                        model: proxyModel,
+                        completed: false,
+                        unusualQueryVolume: unusualQueryVolumeTriggered,
+                    });
+
                     const errorMessage = data.message || "未知错误";
-                
                     const clientErrorMessage = `请求发生错误: ${errorMessage} (错误详情已记录到日志中)`;
+
                     emitter.emit("completion", traceId, clientErrorMessage);
-                
-                    // 在响应末尾附加错误信息
+
                     finalResponse += ` (${errorMessage})`;
-                
+
                     isEnding = true;
-                
                     setTimeout(async () => {
                         await cleanup();
                         emitter.emit("end", traceId);
                     }, 1000);
-                
                     break;
                 }
             }
@@ -1162,52 +1211,69 @@ class YouProvider {
         }
 
         async function setupEventSource(page, url, traceId, customEndMarker) {
-            return page.evaluate(
+            await page.evaluate(
                 async (url, traceId, customEndMarker) => {
-                    const evtSource = new EventSource(url);
+                    let evtSource;
                     const callbackName = "callback" + traceId;
                     let isEnding = false;
+                    let retryCount = 0;
+                    const maxRetries = 5;
                     let customEndMarkerTimer = null;
+                    clientClosed = false; // 重置客户端关闭状态
 
-                    evtSource.onerror = (error) => {
-                        if (!isEnding) {
-                            window[callbackName]("error", error);
-                        }
-                    };
+                    function connect() {
+                        // 重置反代指针
+                        window[callbackName]("resetProxyPointer", "");
 
-                    evtSource.addEventListener("youChatToken", (event) => {
-                        if (isEnding) return;
+                        evtSource = new EventSource(url);
 
-                        const data = JSON.parse(event.data);
-                        window[callbackName]("youChatToken", JSON.stringify(data));
+                        evtSource.onerror = (error) => {
+                            if (isEnding) return;
 
-                        if (customEndMarker && !customEndMarkerTimer) {
-                            customEndMarkerTimer = setTimeout(() => {
-                                window[callbackName]("customEndMarkerEnabled", "");
-                            }, 20000);
-                        }
-                    }, false);
+                            // 检查是否需要重连
+                            if (retryCount < maxRetries) {
+                                retryCount++;
+                                setTimeout(() => {
+                                    connect();
+                                }, 500 * retryCount); // 指数退避
+                            } else {
+                                window[callbackName]("error", error);
+                            }
+                        };
 
-                    evtSource.addEventListener("done", () => {
-                        if (!isEnding) {
-                            window[callbackName]("done", "");
-                        }
-                    }, false);
+                        evtSource.addEventListener("youChatToken", (event) => {
+                            if (isEnding) return;
+                            retryCount = 0; // 重置重试计数器
+                            const data = JSON.parse(event.data);
+                            window[callbackName]("youChatToken", JSON.stringify(data));
 
-                    evtSource.onmessage = (event) => {
-                        if (!isEnding) {
+                            if (customEndMarker && !customEndMarkerTimer) {
+                                customEndMarkerTimer = setTimeout(() => {
+                                    window[callbackName]("customEndMarkerEnabled", "");
+                                }, 20000);
+                            }
+                        }, false);
+
+                        evtSource.addEventListener("done", () => {
+                            if (!isEnding) {
+                                window[callbackName]("done", "");
+                                evtSource.close();
+                            }
+                        }, false);
+
+                        evtSource.onmessage = (event) => {
+                            if (isEnding) return;
+                            retryCount = 0;
                             const data = JSON.parse(event.data);
                             if (data.youChatToken) {
                                 window[callbackName]("youChatToken", JSON.stringify(data));
                             }
-                        }
-                    };
+                        };
+                    }
+                    connect();
                     // 注册退出函数
                     window["exit" + traceId] = () => {
                         isEnding = true;
-                        if (customEndMarkerTimer) {
-                            clearTimeout(customEndMarkerTimer);
-                        }
                         evtSource.close();
                         fetch("https://you.com/api/chat/deleteChat", {
                             headers: {"content-type": "application/json"},
@@ -1269,7 +1335,7 @@ class YouProvider {
             }
 
             responseTimeout = setTimeout(async () => {
-                if (!responseStarted) {
+                if (!responseStarted && !clientClosed) {
                     console.log("60秒内没有收到响应，尝试重新发送请求");
                     const retrySuccess = await resendPreviousRequest();
                     if (!retrySuccess) {
@@ -1277,6 +1343,10 @@ class YouProvider {
                         emitter.emit("warning", new Error("重试请求时发生错误"));
                         emitter.emit("end", traceId);
                     }
+                } else if (clientClosed) {
+                    console.log("客户端已关闭连接，停止重试");
+                    await cleanup();
+                    emitter.emit("end", traceId);
                 }
             }, 60000);
 
