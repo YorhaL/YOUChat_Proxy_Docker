@@ -38,6 +38,10 @@ class ProviderManager {
     getCurrentProvider() {
         return this.provider.constructor.name;
     }
+
+    getLogger() {
+        return this.provider.logger;
+    }
 }
 
 export default ProviderManager;
