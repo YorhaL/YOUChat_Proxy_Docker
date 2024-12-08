@@ -9,7 +9,6 @@ import SessionManager from './sessionManager.mjs';
 import { storeImage } from './imageStorage.mjs';
 import fetch from 'node-fetch';
 import path from 'path';
-import { Buffer } from 'buffer';
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -32,6 +31,7 @@ const availableModels = [
     "command_r",
     "command_r_plus",
     "zephyr",
+    "qwen2p5_72b"
 ];
 const modelMappping = {
     "claude-3-5-sonnet-latest": "claude_3_5_sonnet",
@@ -47,6 +47,7 @@ const modelMappping = {
     "gpt-4o": "gpt_4o",
     "gpt-4-turbo": "gpt_4_turbo",
     "openai-o1": "openai_o1",
+    "o1-preview": "openai_o1",
 };
 
 // import config.mjs
@@ -637,6 +638,8 @@ app.listen(port, async () => {
         const tunnelType = process.env.TUNNEL_TYPE || "localtunnel";
         await createTunnel(tunnelType, port);
     }
+    // 输出当前月份的请求统计信息
+    provider.getLogger().printStatistics();
 });
 
 function AnthropicApiKeyAuth(req, res, next) {
