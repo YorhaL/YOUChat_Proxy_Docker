@@ -9,6 +9,9 @@ set ACTIVE_PROVIDER=you
 REM 设置是否启用手动登录
 set USE_MANUAL_LOGIN=true
 
+REM 是否跳过账户验证 (启用时，`ALLOW_NON_PRO`设置无效，可用于账号量多情况)
+set SKIP_ACCOUNT_VALIDATION=false
+
 REM 是否允许非Pro账户
 set ALLOW_NON_PRO=false
 
