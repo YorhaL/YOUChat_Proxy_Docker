@@ -42,7 +42,7 @@ const modelMappping = {
     "claude-3-sonnet-20240229": "claude_3_sonnet",
     "claude-3-haiku-20240307": "claude_3_haiku",
     "claude-2.1": "claude_2",
-    "claude-2.0": "claude_2",
+    "claude-2.0": "openai_o1",
     "gpt-4": "gpt_4",
     "gpt-4o": "gpt_4o",
     "gpt-4-turbo": "gpt_4_turbo",
@@ -100,6 +100,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
     // 用于存储请求体
     req.rawBody = "";
     req.setEncoding("utf8");
+    clientState.setClosed(false);
 
     // 接收数据
     req.on("data", function (chunk) {
@@ -118,10 +119,6 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
 
         console.log("message length:" + jsonBody.messages.length);
 
-        // 检查是否有可用的会话
-        const selectedSession = sessionManager.getSessionByStrategy('random');
-        console.log("Using session " + selectedSession);
-
         // 尝试映射模型
         if (jsonBody.model && modelMappping[jsonBody.model]) {
             jsonBody.model = modelMappping[jsonBody.model];
@@ -134,6 +131,9 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
 
         // 调用 provider 获取回复
         try {
+            // 检查是否有可用的会话
+            const selectedSession = sessionManager.getSessionByStrategy('random');
+            console.log("Using session " + selectedSession);
             const {completion, cancel} = await provider.getCompletion({
                 username: selectedSession,
                 messages: jsonBody.messages,
@@ -141,6 +141,10 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                 proxyModel: jsonBody.model,
                 useCustomMode: process.env.USE_CUSTOM_MODE === "true"
             });
+            // 释放账号
+            const releaseSession = () => {
+                sessionManager.releaseSession(selectedSession);
+            };
 
             // 监听开始事件
             completion.on("start", (id) => {
@@ -228,17 +232,25 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                     res.write(createEvent("data", "[DONE]"));
                     res.end();
                 }
+                releaseSession();
             });
 
             // 监听客户端关闭事件
             res.on("close", () => {
                 console.log(" > [Client closed]");
+                clientState.setClosed(true);
                 completion.removeAllListeners();
                 cancel();
+                releaseSession();
             });
+
+            // 监听错误事件
+            completion.on("error", releaseSession);
+
         } catch (error) {
             console.error(error);
             const errorMessage = "Error occurred, please check the log.\n\n出现错误，请检查日志：<pre>" + (error.stack || error) + "</pre>";
+            res.status(500).send("No available sessions. 请检查你的账号状态。");
             if (jsonBody.stream) {
                 res.write(
                     createEvent("data", {
@@ -290,6 +302,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                 );
             }
             res.end();
+
         }
     });
 });
@@ -397,6 +410,7 @@ async function fetchImageAsBase64(url) {
 app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
     req.rawBody = "";
     req.setEncoding("utf8");
+    clientState.setClosed(false);
 
     req.on("data", function (chunk) {
         req.rawBody += chunk;
@@ -417,10 +431,6 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
         }
         console.log("message length:" + jsonBody.messages.length);
 
-        // 检查是否有可用的会话
-        const selectedSession = sessionManager.getSessionByStrategy('random');
-        console.log("Using session " + selectedSession);
-
         // decide which model to use
         let proxyModel;
         if (process.env.AI_MODEL) {
@@ -434,6 +444,9 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
 
         // call provider to get completion
         try {
+            // 检查是否有可用的会话
+            const selectedSession = sessionManager.getSessionByStrategy('random');
+            console.log("Using session " + selectedSession);
             const {completion, cancel} = await provider.getCompletion({
                 username: selectedSession,
                 messages: jsonBody.messages,
@@ -441,6 +454,11 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                 proxyModel: proxyModel,
                 useCustomMode: process.env.USE_CUSTOM_MODE === "true"
             });
+
+            // 释放账号
+            const releaseSession = () => {
+                sessionManager.releaseSession(selectedSession);
+            };
 
             completion.on("start", (id) => {
                 if (jsonBody.stream) {
@@ -503,17 +521,25 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                     res.write(createEvent("message_stop", {type: "message_stop"}));
                     res.end();
                 }
+                releaseSession();
             });
 
+            // 监听客户端关闭事件
             res.on("close", () => {
                 console.log(" > [Client closed]");
+                clientState.setClosed(true);
                 completion.removeAllListeners();
                 cancel();
+                releaseSession();
             });
+
+            // 监听错误事件
+            completion.on("error", releaseSession);
 
         } catch (error) {
             console.error(error);
             const errorMessage = "Error occurred, please check the log.\\n\\n出现错误，请检查日志：<pre>" + (error.stack || error) + "</pre>";
+            res.status(500).send("No available sessions. 请检查你的账号状态。");
             if (jsonBody.stream) {
                 res.write(createEvent("content_block_delta", {
                     type: "content_block_delta",
@@ -667,3 +693,18 @@ function OpenAIApiKeyAuth(req, res, next) {
 
     next();
 }
+
+// Path: utils.mjs
+class ClientState {
+    #closed = false;
+
+    setClosed(value) {
+        this.#closed = Boolean(value);
+    }
+
+    isClosed() {
+        return this.#closed;
+    }
+}
+
+export const clientState = new ClientState();
