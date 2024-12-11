@@ -9,6 +9,9 @@ export ACTIVE_PROVIDER=you
 # 设置是否启用手动登录
 export USE_MANUAL_LOGIN=true
 
+# 是否跳过账户验证 (启用时，`ALLOW_NON_PRO`设置无效，可用于账号量多情况)
+export SKIP_ACCOUNT_VALIDATION=false
+
 # 是否允许非Pro账户
 export ALLOW_NON_PRO=false
 
