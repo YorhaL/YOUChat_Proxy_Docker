@@ -11,12 +11,52 @@ class SessionManager {
 
     // 获取所有可用且未锁定会话
     getAvailableSessions() {
-        const currentMode = this.provider.currentMode;
+        if (this.provider && this.provider.currentMode) {
+            const currentMode = this.provider.currentMode;
 
-        return Object.keys(this.sessions).filter(username => {
-            const session = this.sessions[username];
-            return session.valid && !session.locked && session.modeStatus[currentMode];
-        });
+            let availableSessions = Object.keys(this.sessions).filter(username => {
+                const session = this.sessions[username];
+                return session.valid && !session.locked && session.modeStatus && session.modeStatus[currentMode];
+            });
+
+            if (availableSessions.length === 0) {
+                console.warn(`在模式 [${currentMode}] 下没有可用的会话。`);
+
+                if (this.provider && typeof this.provider.switchMode === 'function') {
+                    console.warn(`尝试切换模式...`);
+                    this.provider.switchMode();
+                    const newMode = this.provider.currentMode;
+
+                    availableSessions = Object.keys(this.sessions).filter(username => {
+                        const session = this.sessions[username];
+                        return session.valid && !session.locked && session.modeStatus && session.modeStatus[newMode];
+                    });
+
+                    if (availableSessions.length === 0) {
+                        // 返回所有可用且未锁定会话
+                        availableSessions = Object.keys(this.sessions).filter(username => {
+                            const session = this.sessions[username];
+                            return session.valid && !session.locked;
+                        });
+                    }
+                } else {
+                    console.warn('提供者没有 switchMode 方法');
+                    availableSessions = Object.keys(this.sessions).filter(username => {
+                        const session = this.sessions[username];
+                        return session.valid && !session.locked;
+                    });
+                }
+            }
+
+            return availableSessions;
+        } else {
+            console.warn('提供者没有 currentMode 属性');
+
+            return Object.keys(this.sessions).filter(username => {
+                const session = this.sessions[username];
+                return session.valid && !session.locked;
+            });
+        }
     }
 
     // 随机选择一个可用会话
