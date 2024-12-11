@@ -653,6 +653,8 @@ const createTunnel = async (tunnelType, port) => {
 };
 
 app.listen(port, async () => {
+    // 输出当前月份的请求统计信息
+    provider.getLogger().printStatistics();
     console.log(`YouChat proxy listening on port ${port}`);
     if (!validApiKey) {
         console.log(`Proxy is currently running with no authentication`);
@@ -664,8 +666,6 @@ app.listen(port, async () => {
         const tunnelType = process.env.TUNNEL_TYPE || "localtunnel";
         await createTunnel(tunnelType, port);
     }
-    // 输出当前月份的请求统计信息
-    provider.getLogger().printStatistics();
 });
 
 function AnthropicApiKeyAuth(req, res, next) {
