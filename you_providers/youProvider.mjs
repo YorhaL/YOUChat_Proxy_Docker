@@ -600,7 +600,7 @@ class YouProvider {
         }
 
         await page.goto("https://you.com", {waitUntil: 'domcontentloaded'});
-        await sleep(3000);
+        await sleep(2000);
 
         //打印messages完整结构
         // console.log(messages);
@@ -962,7 +962,7 @@ class YouProvider {
         let buffer = '';
         let clientPointer = 0; // 客户端指针
         let proxyPointer = 0;  // 反代指针
-        let heartbeatInterval = null;
+        let heartbeatInterval = null; // 心跳计时器
         const self = this;
         page.exposeFunction("callback" + traceId, async (event, data) => {
             if (isEnding) return;
@@ -986,6 +986,7 @@ class YouProvider {
 
                     if (!responseStarted) {
                         responseStarted = true;
+
                         startTime = Date.now();
                         clearTimeout(responseTimeout);
                         // 自定义终止符延迟触发
@@ -1096,7 +1097,6 @@ class YouProvider {
                     finalResponse += ` (${errorMessage})`;
                     isEnding = true;
                     setTimeout(async () => {
-                        ``
                         await cleanup();
                         emitter.emit("end", traceId);
                     }, 1000);
@@ -1424,12 +1424,12 @@ class YouProvider {
             if (stream) {
                 heartbeatInterval = setInterval(() => {
                     if (!isEnding && !clientState.isClosed()) {
-                        emitter.emit("completion", traceId, "");
+                        emitter.emit("completion", traceId, " ");
                     } else {
                         clearInterval(heartbeatInterval);
                         heartbeatInterval = null;
                     }
-                }, 10000);
+                }, 5000);
             }
 
             // 初始执行 setupEventSource
