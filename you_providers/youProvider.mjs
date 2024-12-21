@@ -1354,6 +1354,17 @@ class YouProvider {
 
                 await setupEventSource(page, url, traceId, customEndMarker);
 
+                if (stream) {
+                    heartbeatInterval = setInterval(() => {
+                        if (!isEnding && !clientState.isClosed()) {
+                            emitter.emit("completion", traceId, `\r`);
+                        } else {
+                            clearInterval(heartbeatInterval);
+                            heartbeatInterval = null;
+                        }
+                    }, 5000);
+                }
+
                 return true;
             } catch (error) {
                 console.error("重新发送请求时发生错误:", error);
@@ -1409,7 +1420,7 @@ class YouProvider {
             if (stream) {
                 heartbeatInterval = setInterval(() => {
                     if (!isEnding && !clientState.isClosed()) {
-                        emitter.emit("completion", traceId, " ");
+                        emitter.emit("completion", traceId, `\r`);
                     } else {
                         clearInterval(heartbeatInterval);
                         heartbeatInterval = null;
