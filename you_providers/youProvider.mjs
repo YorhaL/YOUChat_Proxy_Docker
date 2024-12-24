@@ -454,44 +454,77 @@ class YouProvider {
     }
 
     async waitForManualLogin(page) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
+            let isResolved = false; // 标记是否已完成
+            let timeoutId;
+
             const checkLoginStatus = async () => {
-                const loginInfo = await page.evaluate(() => {
-                    const userProfileElement = document.querySelector('[data-testid="user-profile-button"]');
-                    if (userProfileElement) {
-                        const emailElement = userProfileElement.querySelector('.sc-19bbc80a-4');
-                        return emailElement ? emailElement.textContent : null;
+                try {
+                    const loginInfo = await page.evaluate(() => {
+                        const userProfileElement = document.querySelector('[data-testid="user-profile-button"]');
+                        if (userProfileElement) {
+                            const emailElement = userProfileElement.querySelector('.sc-19bbc80a-4');
+                            return emailElement ? emailElement.textContent : null;
+                        }
+                        return null;
+                    });
+
+                    if (loginInfo) {
+                        console.log(`检测到自动登录成功: ${loginInfo}`);
+                        const cookies = await page.cookies();
+                        const sessionCookie = this.extractSessionCookie(cookies);
+
+                        // 设置隐身模式 cookie
+                        if (sessionCookie) {
+                            await page.setCookie(...sessionCookie);
+                        }
+
+                        isResolved = true;
+                        clearTimeout(timeoutId);
+                        resolve({loginInfo, sessionCookie});
+                    } else if (!isResolved) {
+                        timeoutId = setTimeout(checkLoginStatus, 1000);
                     }
-                    return null;
-                });
-
-                if (loginInfo) {
-                    console.log(`检测到自动登录成功: ${loginInfo}`);
-                    const cookies = await page.cookies();
-                    const sessionCookie = this.extractSessionCookie(cookies);
-
-                    // 设置 隐身模式 cookie
-                    if (sessionCookie) {
-                        await page.setCookie(...sessionCookie);
+                } catch (error) {
+                    if (error.message.includes('Execution context was destroyed')) {
+                        // 执行上下文被销毁，页面可能发生导航
+                        page.once('load', () => {
+                            if (!isResolved) {
+                                checkLoginStatus();
+                            }
+                        });
+                    } else {
+                        console.error('检查登录状态时发生错误:', error);
+                        if (!isResolved) {
+                            isResolved = true;
+                            clearTimeout(timeoutId);
+                            reject(error);
+                        }
                     }
-
-                    resolve({loginInfo, sessionCookie});
-                } else {
-                    setTimeout(checkLoginStatus, 1000);
                 }
             };
 
             page.on('request', async (request) => {
+                if (isResolved) return;
                 if (request.url().includes('https://you.com/api/instrumentation')) {
                     const cookies = await page.cookies();
                     const sessionCookie = this.extractSessionCookie(cookies);
 
-                    // 设置 隐身模式 cookie
+                    // 设置隐身模式 cookie
                     if (sessionCookie) {
                         await page.setCookie(...sessionCookie);
                     }
 
+                    isResolved = true;
+                    clearTimeout(timeoutId);
                     resolve({loginInfo: null, sessionCookie});
+                }
+            });
+
+            page.on('framenavigated', () => {
+                if (!isResolved) {
+                    console.log('检测到页面导航，重新检查登录状态');
+                    checkLoginStatus();
                 }
             });
 
@@ -1121,7 +1154,7 @@ class YouProvider {
         req_param.append("count", "10");
         req_param.append("safeSearch", "Off");
         req_param.append("mkt", "zh-HK");
-        req_param.append("enable_worklow_generation_ux", "false");
+        req_param.append("enable_worklow_generation_ux", proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" ? "true" : "false");
         req_param.append("domain", "youchat");
         req_param.append("use_personalization_extraction", "false");
         req_param.append("queryTraceId", traceId);
@@ -1320,6 +1353,8 @@ class YouProvider {
         }
 
         // 重新发送请求
+        const responseTimeoutTimer = proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" ? 120000 : 60000;
+        // 重新发送请求
         async function resendPreviousRequest() {
             try {
                 // 清理之前的事件
@@ -1338,8 +1373,8 @@ class YouProvider {
 
                 responseTimeout = setTimeout(async () => {
                     if (!responseStarted) {
-                        console.log("重试请求后仍未收到响应，终止请求");
-                        emitter.emit("warning", new Error("在重试后仍未收到响应"));
+                        console.log(`${responseTimeoutTimer / 1000}秒内没有收到响应，终止请求`);
+                        emitter.emit("completion", traceId, ` (${responseTimeoutTimer / 1000}秒内没有收到响应，终止请求)`);
                         emitter.emit("end", traceId);
                         self.logger.logRequest({
                             email: username,
@@ -1350,9 +1385,7 @@ class YouProvider {
                             unusualQueryVolume: unusualQueryVolumeTriggered,
                         });
                     }
-                }, 60000);
-
-                await setupEventSource(page, url, traceId, customEndMarker);
+                }, responseTimeoutTimer);
 
                 if (stream) {
                     heartbeatInterval = setInterval(() => {
@@ -1364,7 +1397,7 @@ class YouProvider {
                         }
                     }, 5000);
                 }
-
+                await setupEventSource(page, url, traceId, customEndMarker);
                 return true;
             } catch (error) {
                 console.error("重新发送请求时发生错误:", error);
@@ -1387,11 +1420,11 @@ class YouProvider {
 
             responseTimeout = setTimeout(async () => {
                 if (!responseStarted && !clientState.isClosed()) {
-                    console.log("60秒内没有收到响应，尝试重新发送请求");
+                    console.log(`${responseTimeoutTimer / 1000}秒内没有收到响应，尝试重新发送请求`);
                     const retrySuccess = await resendPreviousRequest();
                     if (!retrySuccess) {
                         console.log("重试请求时发生错误，终止请求");
-                        emitter.emit("warning", new Error("重试请求时发生错误"));
+                        emitter.emit("completion", traceId, new Error("重试请求时发生错误"));
                         emitter.emit("end", traceId);
                         self.logger.logRequest({
                             email: username,
@@ -1415,7 +1448,7 @@ class YouProvider {
                         unusualQueryVolume: unusualQueryVolumeTriggered,
                     });
                 }
-            }, 60000);
+            }, responseTimeoutTimer);
 
             if (stream) {
                 heartbeatInterval = setInterval(() => {
@@ -1427,7 +1460,6 @@ class YouProvider {
                     }
                 }, 5000);
             }
-
             // 初始执行 setupEventSource
             await setupEventSource(page, url, traceId, customEndMarker);
 
