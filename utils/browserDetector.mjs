@@ -18,6 +18,12 @@ export function detectBrowser(preferredBrowser = 'auto') {
         browsers.edge = findMacOSBrowser('Microsoft Edge');
     } else if (platform === 'linux') {
         browsers.chrome = findLinuxBrowser('google-chrome');
+
+        //Arch下AUR安装的chrome为google-chrome-stable
+        if(browsers.chrome == null){
+            browsers.chrome =  findLinuxBrowser('google-chrome-stable');
+        }
+        
         browsers.edge = findLinuxBrowser('microsoft-edge');
     }
 
