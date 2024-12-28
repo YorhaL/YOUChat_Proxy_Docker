@@ -15,6 +15,8 @@ const port = process.env.PORT || 8080;
 const validApiKey = process.env.PASSWORD;
 const availableModels = [
     "openai_o1",
+    "openai_o1_mini",
+    "openai_o1_preview",
     "gpt_4o",
     "gpt_4_turbo",
     "gpt_4",
@@ -46,8 +48,9 @@ const modelMappping = {
     "gpt-4": "gpt_4",
     "gpt-4o": "gpt_4o",
     "gpt-4-turbo": "gpt_4_turbo",
-    "openai-o1": "openai_o1",
-    "o1-preview": "openai_o1",
+    "o1": "openai_o1",
+    "o1-preview": "openai_o1_preview",
+    "o1-mini": "openai_o1_mini"
 };
 
 // import config.mjs
