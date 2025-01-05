@@ -33,7 +33,8 @@ const availableModels = [
     "command_r",
     "command_r_plus",
     "zephyr",
-    "qwen2p5_72b"
+    "qwen2p5_72b",
+    "llama3_1_405b"
 ];
 const modelMappping = {
     "claude-3-5-sonnet-latest": "claude_3_5_sonnet",
