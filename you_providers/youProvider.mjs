@@ -201,8 +201,13 @@ class YouProvider {
 
                     // 检测是否为 team 账号
                     session.isTeamAccount = await page.evaluate(() => {
-                        const teamElement = document.querySelector('div._16bctla1 p._16bctla2');
-                        return teamElement && teamElement.textContent === 'Your Team';
+                        let teamElement = document.querySelector('div._15zm0ko1 p._15zm0ko2');
+                        if (teamElement && teamElement.textContent.trim() === 'Your Team') {
+                            return true;
+                        }
+
+                        let altTeamElement = document.querySelector('div.sc-1a751f3b-0.hyfnxg');
+                        return altTeamElement && altTeamElement.textContent.includes('Team');
                     });
 
                     // 如果遇到盾了就多等一段时间
