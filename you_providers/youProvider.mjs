@@ -1,19 +1,18 @@
 import {EventEmitter} from "events";
-import {connect} from "puppeteer-real-browser";
 import {v4 as uuidV4} from "uuid";
 import path from "path";
 import fs from "fs";
 import {fileURLToPath} from "url";
-import {createDirectoryIfNotExists, createDocx, extractCookie, getSessionCookie, sleep} from "../utils.mjs";
+import {createDocx, extractCookie, getSessionCookie, sleep} from "../utils.mjs";
 import {exec} from 'child_process';
 import '../proxyAgent.mjs';
 import {formatMessages} from '../formatMessages.mjs';
 import NetworkMonitor from '../networkMonitor.mjs';
-import {detectBrowser} from '../utils/browserDetector.mjs';
 import {insertGarbledText} from './garbledText.mjs';
 import * as imageStorage from "../imageStorage.mjs";
 import Logger from './logger.mjs';
 import {clientState} from "../index.mjs";
+import SessionManager from '../sessionManager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,11 +21,11 @@ class YouProvider {
     constructor(config) {
         this.config = config;
         this.sessions = {};
-        // 可以是 'chrome', 'edge', 或 'auto'
-        this.preferredBrowser = 'auto';
-        this.isCustomModeEnabled = process.env.USE_CUSTOM_MODE === "true";
-        this.isRotationEnabled = process.env.ENABLE_MODE_ROTATION === "true";
-        this.uploadFileFormat = process.env.UPLOAD_FILE_FORMAT || 'docx';
+        this.isCustomModeEnabled = process.env.USE_CUSTOM_MODE === "true"; // 是否启用自定义模式
+        this.isRotationEnabled = process.env.ENABLE_MODE_ROTATION === "true"; // 是否启用模式轮换
+        this.uploadFileFormat = process.env.UPLOAD_FILE_FORMAT || 'docx'; // 上传文件格式
+        this.enableRequestLimit = process.env.ENABLE_REQUEST_LIMIT === 'true'; // 是否启用请求次数限制
+        this.requestLimit = parseInt(process.env.REQUEST_LIMIT, 10) || 3; // 请求次数上限
         this.networkMonitor = new NetworkMonitor();
         this.logger = new Logger();
     }
@@ -64,47 +63,22 @@ class YouProvider {
     async init(config) {
         console.log(`本项目依赖Chrome或Edge浏览器，请勿关闭弹出的浏览器窗口。如果出现错误请检查是否已安装Chrome或Edge浏览器。`);
 
-        // 检测Chrome和Edge浏览器
-        const browserPath = detectBrowser(this.preferredBrowser);
-        this.sessions = {};
         const timeout = 120000;
-        // 创建共享浏览器用户数据
-        const sharedProfilePath = path.join(__dirname, "browser_profiles", "shared_profile");
-        createDirectoryIfNotExists(sharedProfilePath);
-        // 创建浏览器
-        const response = await connect({
-            headless: "auto",
-            turnstile: true,
-            customConfig: {
-                userDataDir: sharedProfilePath,
-                executablePath: browserPath,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--remote-debugging-address=::',
-                ],
-            },
-        });
-
-        const {page, browser} = response;
-        this.browser = browser;
-        this.page = page;
-
         this.skipAccountValidation = process.env.SKIP_ACCOUNT_VALIDATION !== "true";
 
-        if (process.env.USE_MANUAL_LOGIN === "true") {
-            this.sessions['manual_login'] = {
-                configIndex: 0,
-                valid: false,
-            };
-            console.log("当前使用手动登录模式，跳过config.mjs文件中的 cookie 验证");
+        this.sessionManager = new SessionManager(this);
+        await this.sessionManager.initBrowserInstancesInBatch();
 
+        if (process.env.USE_MANUAL_LOGIN === "true") {
+            console.log("当前使用手动登录模式，跳过config.mjs文件中的 cookie 验证");
+            // 获取一个浏览器实例
+            const browserInstance = this.sessionManager.browserInstances[0];
+            const page = browserInstance.page;
             // 手动登录
             console.log(`请在打开的浏览器窗口中手动登录 You.com`);
             await page.goto("https://you.com", {timeout: timeout});
             await sleep(3000); // 等待页面加载完毕
 
-            // 等待手动登录完成
             const {loginInfo, sessionCookie} = await this.waitForManualLogin(page);
             if (sessionCookie) {
                 const email = loginInfo || sessionCookie.email || 'manual_login';
@@ -123,9 +97,10 @@ class YouProvider {
 
                 // 设置隐身模式 cookie
                 await page.setCookie(...sessionCookie);
+                this.sessionManager.setSessions(this.sessions);
             } else {
                 console.error(`未能获取有效的登录 cookie`);
-                await browser.close();
+                await browserInstance.browser.close();
             }
         } else {
             // 使用配置文件中的 cookie
@@ -181,102 +156,18 @@ class YouProvider {
                 }
             }
             console.log(`已添加 ${Object.keys(this.sessions).length} 个 cookie`);
+            this.sessionManager.setSessions(this.sessions);
         }
+        const validSessionsCount = Object.keys(this.sessions).filter(username => this.sessions[username].valid).length;
+        this.isSingleSession = (validSessionsCount === 1) || (process.env.USE_MANUAL_LOGIN === "true");
         if (this.skipAccountValidation) {
             console.log(`开始验证cookie有效性...`);
-            for (const originalUsername of Object.keys(this.sessions)) {
-                let currentUsername = originalUsername;
-                let session = this.sessions[currentUsername];
-
-                try {
-                    // 设置账户的Cookie
-                    await page.setCookie(...getSessionCookie(
-                        session.jwtSession,
-                        session.jwtToken,
-                        session.ds,
-                        session.dsr
-                    ));
-                    await page.goto("https://you.com", {timeout: timeout});
-                    await sleep(5000); // 等待加载完毕
-
-                    // 检测是否为 team 账号
-                    session.isTeamAccount = await page.evaluate(() => {
-                        let teamElement = document.querySelector('div._15zm0ko1 p._15zm0ko2');
-                        if (teamElement && teamElement.textContent.trim() === 'Your Team') {
-                            return true;
-                        }
-
-                        let altTeamElement = document.querySelector('div.sc-1a751f3b-0.hyfnxg');
-                        return altTeamElement && altTeamElement.textContent.includes('Team');
-                    });
-
-                    // 如果遇到盾了就多等一段时间
-                    const pageContent = await page.content();
-                    if (pageContent.indexOf("https://challenges.cloudflare.com") > -1) {
-                        console.log(`请在30秒内完成人机验证 (${currentUsername})`);
-                        await page.evaluate(() => {
-                            alert("请在30秒内完成人机验证");
-                        });
-                        await sleep(30000);
-                    }
-
-                    // 验证 cookie 有效性
-                    try {
-                        const content = await page.evaluate(() => {
-                            return fetch("https://you.com/api/user/getYouProState").then((res) => res.text());
-                        });
-                        const json = JSON.parse(content);
-                        const allowNonPro = process.env.ALLOW_NON_PRO === "true";
-
-                        if (session.isTeamAccount) {
-                            console.log(`${currentUsername} 有效 (Team 计划)`);
-                            session.valid = true;
-                            session.isTeam = true;
-
-                            // 获取 Team 订阅信息
-                            const teamSubscriptionInfo = await this.getTeamSubscriptionInfo(json.org_subscriptions[0]);
-                            if (teamSubscriptionInfo) {
-                                session.subscriptionInfo = teamSubscriptionInfo;
-                            }
-                        } else if (json.subscriptions && json.subscriptions.length > 0) {
-                            console.log(`${currentUsername} 有效 (Pro 计划)`);
-                            session.valid = true;
-                            session.isPro = true;
-
-                            // 获取 Pro 订阅信息
-                            const subscriptionInfo = await this.getSubscriptionInfo(page);
-                            if (subscriptionInfo) {
-                                session.subscriptionInfo = subscriptionInfo;
-                            }
-                        } else if (allowNonPro) {
-                            console.log(`${currentUsername} 有效 (非Pro)`);
-                            console.warn(`警告: ${currentUsername} 没有Pro或Team订阅，功能受限。`);
-                            session.valid = true;
-                            session.isPro = false;
-                            session.isTeam = false;
-                        } else {
-                            console.log(`${currentUsername} 无有效订阅`);
-                            console.warn(`警告: ${currentUsername} 可能没有有效的订阅。请检查You是否有有效的Pro或Team订阅。`);
-                            await this.clearYouCookies(page);
-                        }
-                    } catch (e) {
-                        console.log(`${currentUsername} 已失效`);
-                        console.warn(`警告: ${currentUsername} 验证失败。请检查cookie是否有效。`);
-                        console.error(e);
-                        await this.clearYouCookies(page);
-                    }
-
-                    if (currentUsername !== Object.keys(this.sessions)[Object.keys(this.sessions).length - 1]) {
-                        await this.clearYouCookies(page);
-                    }
-
-                } catch (e) {
-                    console.error(`验证账户 ${currentUsername} 时出错：`, e);
-                    session.valid = false;
-                    await this.clearYouCookies(page);
-                }
-            }
-
+            // 获取浏览器实例列表
+            const browserInstances = this.sessionManager.browserInstances;
+            // 创建一个账号队列
+            const accountQueue = [...Object.keys(this.sessions)];
+            // 并发验证账号
+            await this.validateAccounts(browserInstances, accountQueue);
             console.log("订阅信息汇总：");
             for (const [username, session] of Object.entries(this.sessions)) {
                 if (session.valid) {
@@ -307,13 +198,173 @@ class YouProvider {
                 this.sessions[username].valid = true;
             }
         }
-
         // 开始网络监控
         await this.networkMonitor.startMonitoring();
-        const validSessionsCount = Object.keys(this.sessions).filter(username => this.sessions[username].valid).length;
-        this.isSingleSession = (validSessionsCount === 1) || (process.env.USE_MANUAL_LOGIN === "true");
         console.log(`验证完毕，有效cookie数量 ${validSessionsCount}`);
         console.log(`开启 ${this.isSingleSession ? "单账号模式" : "多账号模式"}`);
+    }
+
+    async validateAccounts(browserInstances, accountQueue) {
+        const timeout = 120000; // 毫秒
+
+        // 自定义并发上限
+        const desiredConcurrencyLimit = 16;
+
+        // 实际浏览器实例数量
+        const browserCount = browserInstances.length;
+
+        // 最终生效的并发总量 = min(浏览器实例数量, 自定义并发上限)
+        const effectiveConcurrency = Math.min(browserCount, desiredConcurrencyLimit);
+
+        // 如果 Cookie 数量 < 浏览器实例数，则复制到至少 browserCount
+        if (accountQueue.length < browserCount) {
+            const originalQueue = [...accountQueue];
+            if (originalQueue.length === 0) {
+                console.warn("无法验证：accountQueue 为空，未提供任何 Cookie。");
+                return;
+            }
+            while (accountQueue.length < browserCount) {
+                const randomIndex = Math.floor(Math.random() * originalQueue.length);
+                accountQueue.push(originalQueue[randomIndex]);
+            }
+            console.log(`队列已扩充到至少与浏览器实例数相同：${accountQueue.length} 条`);
+        }
+
+        // 如果时队列比“有效并发”小，则再复制到至少 effectiveConcurrency
+        if (accountQueue.length < effectiveConcurrency) {
+            const originalQueue2 = [...accountQueue];
+            while (accountQueue.length < effectiveConcurrency && originalQueue2.length > 0) {
+                const randomIndex = Math.floor(Math.random() * originalQueue2.length);
+                accountQueue.push(originalQueue2[randomIndex]);
+            }
+            console.log(`队列已扩充到至少并发数：${accountQueue.length} 条 (并发=${effectiveConcurrency})`);
+        }
+
+        // 当前正在执行的 任务
+        const validationPromises = [];
+
+        // 轮询
+        let browserIndex = 0;
+        function getNextBrowserInstance() {
+            const instance = browserInstances[browserIndex];
+            browserIndex = (browserIndex + 1) % browserCount;
+            return instance;
+        }
+
+        while (accountQueue.length > 0) {
+            // 如果当前正在执行的任务数量 >= 有效并发
+            if (validationPromises.length >= effectiveConcurrency) {
+                await Promise.race(validationPromises);
+            }
+
+            // 从队列头拿出一个账号
+            const currentUsername = accountQueue.shift();
+
+            const browserInstance = getNextBrowserInstance();
+            const page = browserInstance.page;
+            const session = this.sessions[currentUsername];
+
+            const validationTask = (async () => {
+                try {
+                    await page.setCookie(...getSessionCookie(
+                        session.jwtSession,
+                        session.jwtToken,
+                        session.ds,
+                        session.dsr
+                    ));
+
+                    await page.goto("https://you.com", { timeout });
+
+                    await sleep(5000);
+
+                    // 检测是否为 team 账号
+                    session.isTeamAccount = await page.evaluate(() => {
+                        let teamElement = document.querySelector('div._15zm0ko1 p._15zm0ko2');
+                        if (teamElement && teamElement.textContent.trim() === 'Your Team') {
+                            return true;
+                        }
+
+                        let altTeamElement = document.querySelector('div.sc-1a751f3b-0.hyfnxg');
+                        return altTeamElement && altTeamElement.textContent.includes('Team');
+                    });
+
+                    // 如果遇到盾了就多等一段时间
+                    const pageContent = await page.content();
+                    if (pageContent.includes("https://challenges.cloudflare.com")) {
+                        console.log(`请在30秒内完成人机验证 (${currentUsername})`);
+                        await page.evaluate(() => {
+                            alert("请在30秒内完成人机验证");
+                        });
+                        await sleep(30000);
+                    }
+
+                    // 验证 cookie 有效性
+                    try {
+                        const content = await page.evaluate(() => {
+                            return fetch("https://you.com/api/user/getYouProState").then(res => res.text());
+                        });
+                        const json = JSON.parse(content);
+                        const allowNonPro = process.env.ALLOW_NON_PRO === "true";
+
+                        if (session.isTeamAccount) {
+                            console.log(`${currentUsername} 校验成功 -> Team 账号`);
+                            session.valid = true;
+                            session.isTeam = true;
+
+                            // 获取 Team 订阅信息
+                            const teamSubscriptionInfo = await this.getTeamSubscriptionInfo(json.org_subscriptions?.[0]);
+                            if (teamSubscriptionInfo) {
+                                session.subscriptionInfo = teamSubscriptionInfo;
+                            }
+                        } else if (Array.isArray(json.subscriptions) && json.subscriptions.length > 0) {
+                            console.log(`${currentUsername} 校验成功 -> Pro 账号`);
+                            session.valid = true;
+                            session.isPro = true;
+
+                            // 获取 Pro 订阅信息
+                            const subscriptionInfo = await this.getSubscriptionInfo(page);
+                            if (subscriptionInfo) {
+                                session.subscriptionInfo = subscriptionInfo;
+                            }
+                        } else if (allowNonPro) {
+                            console.log(`${currentUsername} 有效 (非Pro)`);
+                            console.warn(`警告: ${currentUsername} 没有Pro或Team订阅，功能受限。`);
+                            session.valid = true;
+                            session.isPro = false;
+                            session.isTeam = false;
+                        } else {
+                            console.log(`${currentUsername} 无有效订阅`);
+                            console.warn(`警告: ${currentUsername} 可能没有有效的订阅。请检查You是否有有效的Pro或Team订阅。`);
+                            session.valid = false;
+                        }
+                    } catch (parseErr) {
+                        console.log(`${currentUsername} 已失效`);
+                        console.warn(`警告: ${currentUsername} 验证失败。请检查cookie是否有效。`);
+                        console.error(parseErr);
+                        session.valid = false;
+                    }
+
+                    // 如果是多账号模式
+                    if (!this.isSingleSession) {
+                        await this.clearYouCookies(page);
+                    }
+
+                } catch (errorVisit) {
+                    console.error(`验证账户 ${currentUsername} 时出错:`, errorVisit);
+                    session.valid = false;
+                    await this.clearYouCookies(page);
+                } finally {
+                    const index = validationPromises.indexOf(validationTask);
+                    if (index > -1) {
+                        validationPromises.splice(index, 1);
+                    }
+                }
+            })();
+            validationPromises.push(validationTask);
+        }
+
+        // 等待所有任务完成
+        await Promise.all(validationPromises);
     }
 
     async getTeamSubscriptionInfo(subscription) {
@@ -448,14 +499,16 @@ class YouProvider {
     }
 
     async clearYouCookies(page) {
-        const client = await page.target().createCDPSession();
-        await client.send('Network.clearBrowserCookies');
-        await client.send('Network.clearBrowserCache');
-        const cookies = await page.cookies('https://you.com');
-        for (const cookie of cookies) {
-            await page.deleteCookie(cookie);
+        if (!page.isClosed()) {
+            const client = await page.target().createCDPSession();
+            await client.send('Network.clearBrowserCookies');
+            await client.send('Network.clearBrowserCache');
+            const cookies = await page.cookies('https://you.com');
+            for (const cookie of cookies) {
+                await page.deleteCookie(cookie);
+            }
+            console.log('已自动清理 cookie');
         }
-        console.log('已自动清理 cookie');
     }
 
     async waitForManualLogin(page) {
@@ -605,7 +658,15 @@ class YouProvider {
         }
     }
 
-    async getCompletion({username, messages, stream = false, proxyModel, useCustomMode = false, modeSwitched = false}) {
+    async getCompletion({
+                            username,
+                            messages,
+                            browserInstance,
+                            stream = false,
+                            proxyModel,
+                            useCustomMode = false,
+                            modeSwitched = false
+                        }) {
         if (this.networkMonitor.isNetworkBlocked()) {
             throw new Error("网络异常，请稍后再试");
         }
@@ -614,9 +675,7 @@ class YouProvider {
             throw new Error(`用户 ${username} 的会话无效`);
         }
         const emitter = new EventEmitter();
-        let page = this.page;
-        let browser = this.browser;
-
+        let page = browserInstance.page;
         // 初始化 session 相关的模式属性
         if (session.currentMode === undefined) {
             session.currentMode = this.isCustomModeEnabled ? 'custom' : 'default';
@@ -625,8 +684,8 @@ class YouProvider {
             session.requestsInCurrentMode = 0;
             session.lastDefaultThreshold = 0;
             session.switchThreshold = this.getRandomSwitchThreshold(session);
+            session.youTotalRequests = 0;
         }
-
         if (!this.isSingleSession) {
             // 设置账号Cookie
             await page.setCookie(...getSessionCookie(
@@ -742,24 +801,20 @@ class YouProvider {
         // 检查该session是否已经创建对应模型的对应user chat mode
         let userChatModeId = "custom";
         if (effectiveUseCustomMode) {
-            if (!this.config.sessions[session.configIndex].user_chat_mode_id) {
-                this.config.sessions[session.configIndex].user_chat_mode_id = {};
+            if (!this.config.user_chat_mode_id) {
+                this.config.user_chat_mode_id = {};
             }
-
-            // 检查是否存在与当前用户名匹配的记录
-            let existingUserRecord = Object.keys(this.config.sessions[session.configIndex].user_chat_mode_id).find(key => key === username);
-
-            if (!existingUserRecord) {
-                // 为当前用户创建新的记录
-                this.config.sessions[session.configIndex].user_chat_mode_id[username] = {};
-                // 写回config
+            // 检查与当前用户名匹配记录
+            if (!this.config.user_chat_mode_id[username]) {
+                // 为当前用户创建新记录
+                this.config.user_chat_mode_id[username] = {};
                 fs.writeFileSync("./config.mjs", "export const config = " + JSON.stringify(this.config, null, 4));
                 console.log(`Created new record for user: ${username}`);
             }
 
-            // 检查是否存在对应模型的记录
-            if (!this.config.sessions[session.configIndex].user_chat_mode_id[username][proxyModel]) {
-                // 创建新的user chat mode
+            // 检查是否存在对应模型记录
+            if (!this.config.user_chat_mode_id[username][proxyModel]) {
+                // 创建新的 user chat mode
                 let userChatMode = await page.evaluate(
                     async (proxyModel, proxyModelName) => {
                         return fetch("https://you.com/api/custom_assistants/assistants", {
@@ -785,8 +840,8 @@ class YouProvider {
                     uuidV4().substring(0, 4)
                 );
                 if (userChatMode.chat_mode_id) {
-                    this.config.sessions[session.configIndex].user_chat_mode_id[username][proxyModel] = userChatMode.chat_mode_id;
-                    // 写回config
+                    this.config.user_chat_mode_id[username][proxyModel] = userChatMode.chat_mode_id;
+                    // 写回 config
                     fs.writeFileSync("./config.mjs", "export const config = " + JSON.stringify(this.config, null, 4));
                     console.log(`Created new chat mode for user ${username} and model ${proxyModel}`);
                 } else {
@@ -794,7 +849,7 @@ class YouProvider {
                     console.log("Failed to create user chat mode, will use default mode instead.");
                 }
             }
-            userChatModeId = this.config.sessions[session.configIndex].user_chat_mode_id[username][proxyModel];
+            userChatModeId = this.config.user_chat_mode_id[username][proxyModel];
         } else {
             console.log("Custom mode is disabled, using default mode.");
         }
@@ -811,7 +866,15 @@ class YouProvider {
             const formattedMessages = formatMessages(messages, proxyModel, randomFileName);
 
             // 将格式化后的消息转换为纯文本
-            let previousMessages = formattedMessages.map((msg) => `${msg.role}: ${msg.content}`).join("\n\n");
+            let previousMessages = formattedMessages
+              .map((msg) => {
+                if (!msg.role) {
+                  return msg.content;  // role为空只返回content
+                } else {
+                  return `${msg.role}: ${msg.content}`;
+                }
+              })
+              .join("\n\n");
 
             // 插入乱码（如果启用）
             previousMessages = insertGarbledText(previousMessages);
@@ -995,13 +1058,20 @@ class YouProvider {
             if (!this.isSingleSession) {
                 await this.clearYouCookies(page);
             }
+            // 检查请求次数是否达到上限
+            if (this.enableRequestLimit && session.youTotalRequests >= this.requestLimit) {
+                session.modeStatus.default = false;
+                session.modeStatus.custom = false;
+                this.sessionManager.recordLimitedAccount(username);
+            }
         };
 
         // 缓存
         let buffer = '';
         let heartbeatInterval = null; // 心跳计时器
         let errorTimer = null; // 错误计时器
-        const ERROR_TIMEOUT = 15000;
+        let errorCount = 0; // 错误计数器
+        const ERROR_TIMEOUT = 15000; // 错误计时器超时时间
         const self = this;
         page.exposeFunction("callback" + traceId, async (event, data) => {
             if (isEnding) return;
@@ -1125,19 +1195,23 @@ class YouProvider {
                     });
                     break;
                 case "error": {
-                    if (isEnding) return; // 如果已经结束，则忽略错误
+                    if (isEnding) return; // 已结束则忽略
+
                     console.error("请求发生错误", data);
-                    if (errorTimer) {
-                        clearTimeout(errorTimer);
-                    }
-                    errorTimer = setTimeout(async () => {
-                        console.log("连接超时，终止请求");
+                    errorCount++;
+                    if (errorCount >= 3) {
                         const errorMessage = "连接中断，未收到服务器响应";
-                        emitter.emit("completion", traceId, errorMessage);
-                        finalResponse += ` (${errorMessage})`;
+                        if (errorTimer) {
+                            clearTimeout(errorTimer);
+                            errorTimer = null;
+                        }
                         isEnding = true;
+                        finalResponse += ` (${errorMessage})`;
                         await cleanup();
+                        emitter.emit("completion", traceId, errorMessage);
                         emitter.emit("end", traceId);
+
+                        // 记录日志
                         self.logger.logRequest({
                             email: username,
                             time: requestTime,
@@ -1146,12 +1220,35 @@ class YouProvider {
                             completed: false,
                             unusualQueryVolume: unusualQueryVolumeTriggered,
                         });
-                    }, ERROR_TIMEOUT);
+                    } else {
+                        if (errorTimer) {
+                            clearTimeout(errorTimer);
+                        }
+                        errorTimer = setTimeout(async () => {
+                            console.log("连接超时，终止请求");
+                            const errorMessage = "连接中断，未收到服务器响应";
+
+                            emitter.emit("completion", traceId, errorMessage);
+                            finalResponse += ` (${errorMessage})`;
+
+                            isEnding = true;
+                            await cleanup();
+
+                            emitter.emit("end", traceId);
+                            self.logger.logRequest({
+                                email: username,
+                                time: requestTime,
+                                mode: session.currentMode,
+                                model: proxyModel,
+                                completed: false,
+                                unusualQueryVolume: unusualQueryVolumeTriggered,
+                            });
+                        }, ERROR_TIMEOUT);
+                    }
                     break;
                 }
             }
         });
-
 
         // proxy response
         const req_param = new URLSearchParams();
@@ -1357,8 +1454,8 @@ class YouProvider {
             );
         }
 
-        // 重新发送请求
         const responseTimeoutTimer = proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" ? 120000 : 60000;
+
         // 重新发送请求
         async function resendPreviousRequest() {
             try {
@@ -1373,7 +1470,6 @@ class YouProvider {
                 responseAfter20Seconds = '';
                 buffer = '';
                 customEndMarkerEnabled = false;
-
                 clearTimeout(responseTimeout);
 
                 responseTimeout = setTimeout(async () => {
@@ -1465,8 +1561,10 @@ class YouProvider {
                     }
                 }, 5000);
             }
+
             // 初始执行 setupEventSource
             await setupEventSource(page, url, traceId, customEndMarker);
+            session.youTotalRequests = (session.youTotalRequests || 0) + 1; // 增加请求次数
 
         } catch (error) {
             console.error("评估过程中出错:", error);
