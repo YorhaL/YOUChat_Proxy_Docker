@@ -5,17 +5,17 @@ import localtunnel from "localtunnel";
 import ngrok from 'ngrok';
 import {v4 as uuidv4} from "uuid";
 import './proxyAgent.mjs';
-import SessionManager from './sessionManager.mjs';
-import { storeImage } from './imageStorage.mjs';
+import {storeImage} from './imageStorage.mjs';
 import fetch from 'node-fetch';
 import path from 'path';
+import geoip from 'geoip-lite';
+import RequestLogger from './requestLogger.mjs';
 
 const app = express();
 const port = process.env.PORT || 8080;
 const validApiKey = process.env.PASSWORD;
 const availableModels = [
     "openai_o1",
-    "openai_o1_mini",
     "openai_o1_preview",
     "gpt_4o",
     "gpt_4_turbo",
@@ -34,7 +34,8 @@ const availableModels = [
     "command_r_plus",
     "zephyr",
     "qwen2p5_72b",
-    "llama3_1_405b"
+    "llama3_1_405b",
+    "grok_2"
 ];
 const modelMappping = {
     "claude-3-5-sonnet-latest": "claude_3_5_sonnet",
@@ -49,9 +50,8 @@ const modelMappping = {
     "gpt-4": "gpt_4",
     "gpt-4o": "gpt_4o",
     "gpt-4-turbo": "gpt_4_turbo",
-    "o1": "openai_o1",
-    "o1-preview": "openai_o1_preview",
-    "o1-mini": "openai_o1_mini"
+    "openai-o1": "openai_o1",
+    "o1-preview": "openai_o1",
 };
 
 // import config.mjs
@@ -69,7 +69,10 @@ const provider = new YouProvider(config);
 await provider.init(config);
 
 // 初始化 SessionManager
-const sessionManager = new SessionManager(provider.provider);
+const sessionManager = provider.getSessionManager();
+
+// 初始化 RequestLogger
+const requestLogger = new RequestLogger();
 
 // handle preflight request
 app.use((req, res, next) => {
@@ -121,7 +124,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
         try {
             jsonBody = JSON.parse(req.rawBody);
         } catch (error) {
-            res.status(400).json({ error: { code: 400, message: "Invalid JSON" } });
+            res.status(400).json({error: {code: 400, message: "Invalid JSON"}});
             return;
         }
 
@@ -135,7 +138,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
             jsonBody.model = modelMappping[jsonBody.model];
         }
         if (jsonBody.model && !availableModels.includes(jsonBody.model)) {
-            res.json({ error: { code: 404, message: "Invalid Model" } });
+            res.json({error: {code: 404, message: "Invalid Model"}});
             return;
         }
         console.log("Using model " + jsonBody.model);
@@ -144,11 +147,12 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
         let releaseSessionCalled = false;
         let completion;
         let cancel;
+        let selectedBrowserId;
         // 定义释放会话
         const releaseSession = () => {
-            if (selectedSession && !releaseSessionCalled) {
-                sessionManager.releaseSession(selectedSession);
-                console.log(`释放会话 ${selectedSession}`);
+            if (selectedSession && selectedBrowserId && !releaseSessionCalled) {
+                sessionManager.releaseSession(selectedSession, selectedBrowserId);
+                console.log(`释放会话 ${selectedSession} 和浏览器实例 ${selectedBrowserId}`);
                 releaseSessionCalled = true;
             }
         };
@@ -167,14 +171,35 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
         });
 
         try {
-            // 获取并锁定可用会话
-            const { selectedUsername, modeSwitched } = await sessionManager.getSessionByStrategy('round_robin');
+            // 获取客户端 IP
+            const clientIpAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+            const geo = geoip.lookup(clientIpAddress) || {};
+            const locationInfo = `${geo.country || 'Unknown'}-${geo.region || 'Unknown'}-${geo.city || 'Unknown'}`;
+            const requestTime = new Date();
+
+            // 获取并锁定可用会话和浏览器实例
+            const {
+                selectedUsername,
+                modeSwitched,
+                browserInstance
+            } = await sessionManager.getSessionByStrategy('round_robin');
             selectedSession = selectedUsername;
+            selectedBrowserId = browserInstance.id;
             console.log("Using session " + selectedSession);
 
-            ({ completion, cancel } = await provider.getCompletion({
+            // 记录请求信息
+            await requestLogger.logRequest({
+                time: requestTime,
+                ip: clientIpAddress,
+                location: locationInfo,
+                model: jsonBody.model,
+                session: selectedSession
+            });
+
+            ({completion, cancel} = await provider.getCompletion({
                 username: selectedSession,
                 messages: jsonBody.messages,
+                browserInstance: browserInstance,
                 stream: !!jsonBody.stream,
                 proxyModel: jsonBody.model,
                 useCustomMode: process.env.USE_CUSTOM_MODE === "true",
@@ -195,7 +220,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                             system_fingerprint: "114514",
                             choices: [{
                                 index: 0,
-                                delta: { role: "assistant", content: "" },
+                                delta: {role: "assistant", content: ""},
                                 logprobs: null,
                                 finish_reason: null
                             }],
@@ -213,12 +238,12 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                             choices: [
                                 {
                                     content_filter_results: {
-                                        hate: { filtered: false, severity: "safe" },
-                                        self_harm: { filtered: false, severity: "safe" },
-                                        sexual: { filtered: false, severity: "safe" },
-                                        violence: { filtered: false, severity: "safe" },
+                                        hate: {filtered: false, severity: "safe"},
+                                        self_harm: {filtered: false, severity: "safe"},
+                                        sexual: {filtered: false, severity: "safe"},
+                                        violence: {filtered: false, severity: "safe"},
                                     },
-                                    delta: { content: text },
+                                    delta: {content: text},
                                     finish_reason: null,
                                     index: 0,
                                 },
@@ -268,6 +293,7 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                     res.write(createEvent("data", "[DONE]"));
                     res.end();
                 }
+
                 releaseSession();
             });
 
@@ -282,12 +308,12 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                                 choices: [
                                     {
                                         content_filter_results: {
-                                            hate: { filtered: false, severity: "safe" },
-                                            self_harm: { filtered: false, severity: "safe" },
-                                            sexual: { filtered: false, severity: "safe" },
-                                            violence: { filtered: false, severity: "safe" },
+                                            hate: {filtered: false, severity: "safe"},
+                                            self_harm: {filtered: false, severity: "safe"},
+                                            sexual: {filtered: false, severity: "safe"},
+                                            violence: {filtered: false, severity: "safe"},
                                         },
-                                        delta: { content: errorMessage },
+                                        delta: {content: errorMessage},
                                         finish_reason: null,
                                         index: 0,
                                     },
@@ -345,12 +371,12 @@ app.post("/v1/chat/completions", OpenAIApiKeyAuth, (req, res) => {
                             choices: [
                                 {
                                     content_filter_results: {
-                                        hate: { filtered: false, severity: "safe" },
-                                        self_harm: { filtered: false, severity: "safe" },
-                                        sexual: { filtered: false, severity: "safe" },
-                                        violence: { filtered: false, severity: "safe" },
+                                        hate: {filtered: false, severity: "safe"},
+                                        self_harm: {filtered: false, severity: "safe"},
+                                        sexual: {filtered: false, severity: "safe"},
+                                        violence: {filtered: false, severity: "safe"},
                                     },
-                                    delta: { content: errorMessage },
+                                    delta: {content: errorMessage},
                                     finish_reason: null,
                                     index: 0,
                                 },
@@ -411,7 +437,7 @@ async function openaiNormalizeMessages(messages) {
             }
         } else {
             if (currentSystemMessage) {
-                normalizedMessages.push({ role: 'system', content: currentSystemMessage });
+                normalizedMessages.push({role: 'system', content: currentSystemMessage});
                 currentSystemMessage = "";
             }
 
@@ -430,7 +456,7 @@ async function openaiNormalizeMessages(messages) {
                         // 获取图片 base64
                         const base64Data = await fetchImageAsBase64(item.image_url.url);
                         if (base64Data) {
-                            const { imageId } = storeImage(base64Data, mediaType);
+                            const {imageId} = storeImage(base64Data, mediaType);
                             console.log(`Image stored with ID: ${imageId}, Media Type: ${mediaType}`);
                         } else {
                             console.warn('Failed to store image due to missing data.');
@@ -438,7 +464,7 @@ async function openaiNormalizeMessages(messages) {
                     }
                 }
 
-                normalizedMessages.push({ role: message.role, content: textContent });
+                normalizedMessages.push({role: message.role, content: textContent});
             } else if (typeof message.content === 'string') {
                 normalizedMessages.push(message);
             } else {
@@ -449,7 +475,7 @@ async function openaiNormalizeMessages(messages) {
     }
 
     if (currentSystemMessage) {
-        normalizedMessages.push({ role: 'system', content: currentSystemMessage });
+        normalizedMessages.push({role: 'system', content: currentSystemMessage});
     }
 
     return normalizedMessages;
@@ -458,7 +484,7 @@ async function openaiNormalizeMessages(messages) {
 // 图片 URL 获取媒体类型
 async function getMediaTypeFromUrl(url) {
     try {
-        const response = await fetch(url, { method: 'HEAD' });
+        const response = await fetch(url, {method: 'HEAD'});
         const contentType = response.headers.get('content-type');
         return contentType || guessMediaTypeFromUrl(url);
     } catch (error) {
@@ -515,7 +541,7 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
         try {
             jsonBody = JSON.parse(req.rawBody);
         } catch (error) {
-            res.status(400).json({ error: { code: 400, message: "Invalid JSON" } });
+            res.status(400).json({error: {code: 400, message: "Invalid JSON"}});
             return;
         }
 
@@ -524,7 +550,7 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
 
         if (jsonBody.system) {
             // 把系统消息加入 messages 的首条
-            jsonBody.messages.unshift({ role: "system", content: jsonBody.system });
+            jsonBody.messages.unshift({role: "system", content: jsonBody.system});
         }
         console.log("message length:" + jsonBody.messages.length);
 
@@ -534,21 +560,28 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
             proxyModel = process.env.AI_MODEL;
         } else if (jsonBody.model && modelMappping[jsonBody.model]) {
             proxyModel = modelMappping[jsonBody.model];
+        } else if (jsonBody.model) {
+            proxyModel = jsonBody.model;
         } else {
             proxyModel = "claude_3_opus";
         }
         console.log(`Using model ${proxyModel}`);
 
+        if (proxyModel && !availableModels.includes(proxyModel)) {
+            res.json({error: {code: 404, message: "Invalid Model"}});
+            return;
+        }
+
         let selectedSession;
         let releaseSessionCalled = false;
         let completion;
         let cancel;
-
+        let selectedBrowserId;
         // 定义释放会话
         const releaseSession = () => {
-            if (selectedSession && !releaseSessionCalled) {
-                sessionManager.releaseSession(selectedSession);
-                console.log(`释放会话 ${selectedSession}`);
+            if (selectedSession && selectedBrowserId && !releaseSessionCalled) {
+                sessionManager.releaseSession(selectedSession, selectedBrowserId);
+                console.log(`释放会话 ${selectedSession} 和浏览器实例 ${selectedBrowserId}`);
                 releaseSessionCalled = true;
             }
         };
@@ -567,14 +600,35 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
         });
 
         try {
-            // 获取并锁定会话
-            const { selectedUsername, modeSwitched } = await sessionManager.getSessionByStrategy('round_robin');
+            // 获取客户端 IP
+            const clientIpAddress = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+            const geo = geoip.lookup(clientIpAddress) || {};
+            const locationInfo = `${geo.country || 'Unknown'}-${geo.region || 'Unknown'}-${geo.city || 'Unknown'}`;
+            const requestTime = new Date();
+
+            // 获取并锁定可用会话和浏览器实例
+            const {
+                selectedUsername,
+                modeSwitched,
+                browserInstance
+            } = await sessionManager.getSessionByStrategy('round_robin');
             selectedSession = selectedUsername;
+            selectedBrowserId = browserInstance.id;
             console.log("Using session " + selectedSession);
 
-            ({ completion, cancel } = await provider.getCompletion({
+            // 记录请求信息
+            await requestLogger.logRequest({
+                time: requestTime,
+                ip: clientIpAddress,
+                location: locationInfo,
+                model: jsonBody.model,
+                session: selectedSession
+            });
+
+            ({completion, cancel} = await provider.getCompletion({
                 username: selectedSession,
                 messages: jsonBody.messages,
+                browserInstance: browserInstance,
                 stream: !!jsonBody.stream,
                 proxyModel: proxyModel,
                 useCustomMode: process.env.USE_CUSTOM_MODE === "true",
@@ -595,15 +649,15 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                             model: proxyModel,
                             stop_reason: null,
                             stop_sequence: null,
-                            usage: { input_tokens: 8, output_tokens: 1 },
+                            usage: {input_tokens: 8, output_tokens: 1},
                         },
                     }));
                     res.write(createEvent("content_block_start", {
                         type: "content_block_start",
                         index: 0,
-                        content_block: { type: "text", text: "" }
+                        content_block: {type: "text", text: ""}
                     }));
-                    res.write(createEvent("ping", { type: "ping" }));
+                    res.write(createEvent("ping", {type: "ping"}));
                 }
             });
 
@@ -614,20 +668,20 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                     res.write(createEvent("content_block_delta", {
                         type: "content_block_delta",
                         index: 0,
-                        delta: { type: "text_delta", text: text },
+                        delta: {type: "text_delta", text: text},
                     }));
                 } else {
                     // 只会发一次，发送final response
                     res.write(JSON.stringify({
                         id: id,
                         content: [
-                            { text: text },
-                            { id: "string", name: "string", input: {} },
+                            {text: text},
+                            {id: "string", name: "string", input: {}},
                         ],
                         model: proxyModel,
                         stop_reason: "end_turn",
                         stop_sequence: null,
-                        usage: { input_tokens: 0, output_tokens: 0 },
+                        usage: {input_tokens: 0, output_tokens: 0},
                     }));
                     res.end();
                     releaseSession();
@@ -637,13 +691,13 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
             // 监听结束事件
             completion.on("end", () => {
                 if (jsonBody.stream) {
-                    res.write(createEvent("content_block_stop", { type: "content_block_stop", index: 0 }));
+                    res.write(createEvent("content_block_stop", {type: "content_block_stop", index: 0}));
                     res.write(createEvent("message_delta", {
                         type: "message_delta",
-                        delta: { stop_reason: "end_turn", stop_sequence: null },
-                        usage: { output_tokens: 12 },
+                        delta: {stop_reason: "end_turn", stop_sequence: null},
+                        usage: {output_tokens: 12},
                     }));
-                    res.write(createEvent("message_stop", { type: "message_stop" }));
+                    res.write(createEvent("message_stop", {type: "message_stop"}));
                     res.end();
                 }
                 releaseSession();
@@ -659,17 +713,17 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                         res.write(createEvent("content_block_delta", {
                             type: "content_block_delta",
                             index: 0,
-                            delta: { type: "text_delta", text: errorMessage },
+                            delta: {type: "text_delta", text: errorMessage},
                         }));
                         res.end();
                     } else {
                         res.write(JSON.stringify({
                             id: uuidv4(),
-                            content: [{ text: errorMessage }, { id: "string", name: "string", input: {} }],
+                            content: [{text: errorMessage}, {id: "string", name: "string", input: {}}],
                             model: proxyModel,
                             stop_reason: "error",
                             stop_sequence: null,
-                            usage: { input_tokens: 0, output_tokens: 0 },
+                            usage: {input_tokens: 0, output_tokens: 0},
                         }));
                         res.end();
                     }
@@ -687,17 +741,17 @@ app.post("/v1/messages", AnthropicApiKeyAuth, (req, res) => {
                     res.write(createEvent("content_block_delta", {
                         type: "content_block_delta",
                         index: 0,
-                        delta: { type: "text_delta", text: errorMessage },
+                        delta: {type: "text_delta", text: errorMessage},
                     }));
                     res.end();
                 } else {
                     res.write(JSON.stringify({
                         id: uuidv4(),
-                        content: [{ text: errorMessage }, { id: "string", name: "string", input: {} }],
+                        content: [{text: errorMessage}, {id: "string", name: "string", input: {}}],
                         model: proxyModel,
                         stop_reason: "error",
                         stop_sequence: null,
-                        usage: { input_tokens: 0, output_tokens: 0 },
+                        usage: {input_tokens: 0, output_tokens: 0},
                     }));
                     res.end();
                 }
@@ -721,12 +775,12 @@ function anthropicNormalizeMessages(messages) {
             // 处理图片内容，存储图片
             message.content.forEach(item => {
                 if (item.type === 'image' && item.source?.type === 'base64') {
-                    const { imageId, mediaType } = storeImage(item.source.data, item.source.media_type);
+                    const {imageId, mediaType} = storeImage(item.source.data, item.source.media_type);
                     console.log(`Image stored with ID: ${imageId}, Media Type: ${mediaType}`);
                 }
             });
 
-            return { ...message, content: textContent };
+            return {...message, content: textContent};
         } else {
             console.warn('Unknown message format:', message);
             return message; // 未知格式，返回原始消息
@@ -758,6 +812,13 @@ const createLocaltunnel = async (port, subdomain) => {
     }
 };
 
+/*
+    * 创建ngrok隧道
+    * @param {number} port - 本地端口
+    * @param {string} authToken - ngrok的认证token
+    * @param {string} customDomain - 自定义域名
+    * @param {string} subdomain - 子域名
+ */
 const createNgrok = async (port, authToken, customDomain, subdomain) => {
     const ngrokOptions = {addr: port, authtoken: authToken};
 
@@ -793,7 +854,7 @@ const createTunnel = async (tunnelType, port) => {
     if (tunnelType === "localtunnel") {
         return createLocaltunnel(port, process.env.SUBDOMAIN);
     } else if (tunnelType === "ngrok") {
-        return createNgrok(port, process.env.NGROK_AUTH_TOKEN, process.env.NGROK_CUSTOM_DOMAIN, process.env.SUBDOMAIN);
+        return createNgrok(port, process.env.NGROK_AUTH_TOKEN, process.env.NGROK_CUSTOM_DOMAIN, process.env.NGROK_SUBDOMAIN);
     }
 };
 
