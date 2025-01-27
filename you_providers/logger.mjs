@@ -1,12 +1,14 @@
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from 'url';
+import { Mutex } from 'async-mutex';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 class Logger {
     constructor() {
+        this.logMutex = new Mutex();
         this.logFilePath = path.join(__dirname, 'requests.log');
         this.statistics = {};
         this.monthStart = this.getMonthStart();
@@ -32,7 +34,11 @@ class Logger {
 
     // 加载日志
     loadStatistics() {
-        if (fs.existsSync(this.logFilePath)) {
+        this.logMutex.runExclusive(() => {
+            if (!fs.existsSync(this.logFilePath)) {
+                fs.writeFileSync(this.logFilePath, '', 'utf8');
+                return;
+            }
             const data = fs.readFileSync(this.logFilePath, 'utf-8');
             const entries = data.split('\n').filter(line => line.trim());
             const validEntries = [];
@@ -140,7 +146,9 @@ class Logger {
             // 清理无效数据
             const cleanedData = validEntries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
             fs.writeFileSync(this.logFilePath, cleanedData);
-        }
+        }).catch(err => {
+            console.error('loadStatistics() 加锁异常:', err);
+        });
     }
 
     // 更新统计
@@ -161,32 +169,31 @@ class Logger {
     }
 
     // 记录请求日志
-    logRequest({ provider, email, time, mode, model, completed, unusualQueryVolume }) {
-        provider = provider || process.env.ACTIVE_PROVIDER || 'you';
+    logRequest({provider, email, time, mode, model, completed, unusualQueryVolume}) {
         const logEntryArray = [
-            ['provider', provider], // 提供者名称
-            ['email', email], // 用户邮箱
-            ['time', time], // 请求时间
-            ['mode', mode], // 请求模式
-            ['model', model], // 请求模型
-            ['completed', completed], // 是否完成
-            ['unusualQueryVolume', unusualQueryVolume], // 是否异常请求量
+            ['provider', provider || process.env.ACTIVE_PROVIDER || 'you'],
+            ['email', email || 'unknown'],
+            ['time', time],
+            ['mode', mode || 'unknown'],
+            ['model', model || 'unknown'],
+            ['completed', completed || 'unknown'],
+            ['unusualQueryVolume', unusualQueryVolume || 'unknown'],
         ];
         const logEntry = Object.fromEntries(logEntryArray);
-        // 写入日志
-        fs.appendFileSync(this.logFilePath, JSON.stringify(logEntry) + '\n');
 
-        // 当前月份请求更新统计
-        const logDate = new Date(time);
-        if (logDate >= this.monthStart) {
-            // 初始化 provider
-            if (!this.statistics[provider]) {
-                this.statistics[provider] = {};
+        // 写日志与更新 statistics
+        this.logMutex.runExclusive(() => {
+            fs.appendFileSync(this.logFilePath, JSON.stringify(logEntry) + '\n');
+
+            const logDate = new Date(logEntry.time);
+            const providerName = logEntry.provider;
+            if (!this.statistics[providerName]) {
+                this.statistics[providerName] = {};
             }
 
-            const userEmail = email || 'unknown';
-            if (!this.statistics[provider][userEmail]) {
-                this.statistics[provider][userEmail] = {
+            const userEmail = logEntry.email;
+            if (!this.statistics[providerName][userEmail]) {
+                this.statistics[providerName][userEmail] = {
                     allRequests: [],
                     monthlyRequests: [],
                     dailyRequests: [],
@@ -205,7 +212,7 @@ class Logger {
                 };
             }
 
-            const stats = this.statistics[provider][userEmail];
+            const stats = this.statistics[providerName][userEmail];
             stats.allRequests.push(logEntry);
 
             // 当日统计
@@ -215,16 +222,29 @@ class Logger {
             }
 
             // 本月统计
-            stats.monthlyRequests.push(logEntry);
-            this.updateStatistics(stats.monthlyStats, logEntry);
-        }
+            if (logDate >= this.monthStart) {
+                stats.monthlyRequests.push(logEntry);
+                this.updateStatistics(stats.monthlyStats, logEntry);
+            }
+        }).catch(err => {
+            console.error('logRequest() 加锁异常:', err);
+        });
     }
 
     // 输出当前统计信息
     printStatistics() {
         const provider = process.env.ACTIVE_PROVIDER || 'you';
-        const monthStart = this.monthStart.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
-        const today = this.today.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+        const monthStartStr = this.monthStart.toLocaleDateString('zh-CN', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+        const todayStr = this.today.toLocaleDateString('zh-CN', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+
         if (!this.statistics[provider]) {
             console.log(`===== 提供者 ${provider} 没有统计数据 =====`);
             return;
@@ -234,21 +254,21 @@ class Logger {
         for (const email of emails) {
             const stats = this.statistics[provider][email];
             console.log(`用户邮箱: ${email}`);
-            console.log(`---------- 本月[${monthStart}]统计 ----------`);
+            console.log(`---------- 本月[${monthStartStr}]统计 ----------`);
             console.log(`总请求次数: ${stats.monthlyStats.totalRequests}`);
             console.log(`default 请求次数: ${stats.monthlyStats.defaultModeCount}`);
             console.log(`custom 请求次数: ${stats.monthlyStats.customModeCount}`);
             console.log('各模型请求次数:');
-            for (const [model, count] of Object.entries(stats.monthlyStats.modelCount)) {
-                console.log(`  - ${model}: ${count}`);
+            for (const [mdl, count] of Object.entries(stats.monthlyStats.modelCount)) {
+                console.log(`  - ${mdl}: ${count}`);
             }
-            console.log(`---------- 今日[${today}]统计 ----------`);
+            console.log(`---------- 今日[${todayStr}]统计 ----------`);
             console.log(`总请求次数: ${stats.dailyStats.totalRequests}`);
             console.log(`default 请求次数: ${stats.dailyStats.defaultModeCount}`);
             console.log(`custom 请求次数: ${stats.dailyStats.customModeCount}`);
             console.log('各模型请求次数:');
-            for (const [model, count] of Object.entries(stats.dailyStats.modelCount)) {
-                console.log(`  - ${model}: ${count}`);
+            for (const [mdl, count] of Object.entries(stats.dailyStats.modelCount)) {
+                console.log(`  - ${mdl}: ${count}`);
             }
             console.log('------------------------------');
         }
