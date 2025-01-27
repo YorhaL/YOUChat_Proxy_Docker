@@ -9,8 +9,23 @@ export ACTIVE_PROVIDER=you
 # 设置是否启用手动登录
 export USE_MANUAL_LOGIN=true
 
+# 设置是否隐藏浏览器 (设置浏览器实例较大时，建议设置为true) (只有在`USE_MANUAL_LOGIN=false`时才有效)
+export HEADLESS_BROWSER=true
+
+# 设置启动浏览器实例数量(非并发场景下，建议设置1)
+export BROWSER_INSTANCE_COUNT=1
+
+# 设置会话自动释放时间(单位:秒) (0=禁用自动释放)
+export SESSION_LOCK_TIMEOUT=180
+
+# 设置是否启用并发限制
+export ENABLE_DETECTION=true
+
 # 是否跳过账户验证 (启用时，`ALLOW_NON_PRO`设置无效，可用于账号量多情况)
 export SKIP_ACCOUNT_VALIDATION=false
+
+# 开启请求次数上限(默认限制3次请求) (用于免费账户)
+export ENABLE_REQUEST_LIMIT=false
 
 # 是否允许非Pro账户
 export ALLOW_NON_PRO=false
