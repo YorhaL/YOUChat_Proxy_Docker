@@ -1,8 +1,8 @@
 import YouProvider from './you_providers/youProvider.mjs';
 import PerplexityProvider from './perplexity_providers/perplexityProvider.mjs';
 import HappyApiProvider from './happyapi_providers/happyApi.mjs';
-import { config as youConfig } from './config.mjs';
-import { config as perplexityConfig } from './perplexityConfig.mjs';
+import {config as youConfig} from './config.mjs';
+import {config as perplexityConfig} from './perplexityConfig.mjs';
 
 class ProviderManager {
     constructor() {
@@ -41,6 +41,10 @@ class ProviderManager {
 
     getLogger() {
         return this.provider.logger;
+    }
+
+    getSessionManager() {
+        return this.provider.sessionManager;
     }
 }
 
