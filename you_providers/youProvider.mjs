@@ -1287,6 +1287,7 @@ class YouProvider {
         if (userChatModeId === "custom") req_param.append("selectedAiModel", proxyModel);
         req_param.append("enable_agent_clarification_questions", "false");
         req_param.append("traceId", `${traceId}|${msgid}|${new Date().toISOString()}`);
+        req_param.append("use_nested_youchat_updates", "false");
         req_param.append("q", userQuery);
         req_param.append("chat", JSON.stringify(userMessage));
         const url = "https://you.com/api/streamingSearch?" + req_param.toString();
