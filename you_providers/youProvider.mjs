@@ -1071,7 +1071,7 @@ class YouProvider {
         let heartbeatInterval = null; // 心跳计时器
         let errorTimer = null; // 错误计时器
         let errorCount = 0; // 错误计数器
-        const ERROR_TIMEOUT = 15000; // 错误计时器超时时间
+        const ERROR_TIMEOUT = (proxyModel === "openai_o1" || proxyModel === "openai_o1_preview") ? 60000 : 20000; // 错误超时时间
         const self = this;
         page.exposeFunction("callback" + traceId, async (event, data) => {
             if (isEnding) return;
