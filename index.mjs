@@ -35,7 +35,9 @@ const availableModels = [
     "zephyr",
     "qwen2p5_72b",
     "llama3_1_405b",
-    "grok_2"
+    "grok_2",
+    "deepseek_r1",
+    "deepseek_v3"
 ];
 const modelMappping = {
     "claude-3-5-sonnet-latest": "claude_3_5_sonnet",
