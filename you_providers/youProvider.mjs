@@ -13,6 +13,7 @@ import * as imageStorage from "../imageStorage.mjs";
 import Logger from './logger.mjs';
 import {clientState} from "../index.mjs";
 import SessionManager from '../sessionManager.mjs';
+import {updateLocalConfigCookieByEmailNonBlocking} from './cookieUpdater.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -230,7 +231,7 @@ class YouProvider {
             console.log(`队列已扩充到至少与浏览器实例数相同：${accountQueue.length} 条`);
         }
 
-        // 如果时队列比“有效并发”小，则再复制到至少 effectiveConcurrency
+        // 如果队列比“有效并发”小，则再复制到至少 effectiveConcurrency
         if (accountQueue.length < effectiveConcurrency) {
             const originalQueue2 = [...accountQueue];
             while (accountQueue.length < effectiveConcurrency && originalQueue2.length > 0) {
@@ -245,6 +246,7 @@ class YouProvider {
 
         // 轮询
         let browserIndex = 0;
+
         function getNextBrowserInstance() {
             const instance = browserInstances[browserIndex];
             browserIndex = (browserIndex + 1) % browserCount;
@@ -272,11 +274,16 @@ class YouProvider {
                         session.ds,
                         session.dsr
                     ));
+                    await page.goto("https://you.com", {
+                        timeout,
+                        waitUntil: 'domcontentloaded'
+                    });
 
-                    await page.goto("https://you.com", { timeout });
-
-                    await sleep(5000);
-
+                    // try {
+                    //     await page.waitForNetworkIdle({timeout: 10000});
+                    // } catch (err) {
+                    //     console.warn(`[${currentUsername}] 等待网络空闲超时`);
+                    // }
                     // 检测是否为 team 账号
                     session.isTeamAccount = await page.evaluate(() => {
                         let teamElement = document.querySelector('div._15zm0ko1 p._15zm0ko2');
@@ -303,6 +310,7 @@ class YouProvider {
                         const content = await page.evaluate(() => {
                             return fetch("https://you.com/api/user/getYouProState").then(res => res.text());
                         });
+
                         const json = JSON.parse(content);
                         const allowNonPro = process.env.ALLOW_NON_PRO === "true";
 
@@ -338,22 +346,19 @@ class YouProvider {
                             session.valid = false;
                         }
                     } catch (parseErr) {
-                        console.log(`${currentUsername} 已失效`);
+                        console.log(`${currentUsername} 已失效 (fetchYouProState 异常)`);
                         console.warn(`警告: ${currentUsername} 验证失败。请检查cookie是否有效。`);
                         console.error(parseErr);
                         session.valid = false;
                     }
-
-                    // 如果是多账号模式
-                    if (!this.isSingleSession) {
-                        await this.clearYouCookies(page);
-                    }
-
                 } catch (errorVisit) {
                     console.error(`验证账户 ${currentUsername} 时出错:`, errorVisit);
                     session.valid = false;
-                    await this.clearYouCookies(page);
                 } finally {
+                    // 如果是多账号模式
+                    if (!this.isSingleSession) {
+                        await clearCookiesNonBlocking(page);
+                    }
                     const index = validationPromises.indexOf(validationTask);
                     if (index > -1) {
                         validationPromises.splice(index, 1);
@@ -495,19 +500,6 @@ class YouProvider {
         } catch (error) {
             console.error('获取订阅信息时出错:', error);
             return null;
-        }
-    }
-
-    async clearYouCookies(page) {
-        if (!page.isClosed()) {
-            const client = await page.target().createCDPSession();
-            await client.send('Network.clearBrowserCookies');
-            await client.send('Network.clearBrowserCache');
-            const cookies = await page.cookies('https://you.com');
-            for (const cookie of cookies) {
-                await page.deleteCookie(cookie);
-            }
-            console.log('已自动清理 cookie');
         }
     }
 
@@ -696,8 +688,9 @@ class YouProvider {
             ));
         }
 
+        await sleep(1000);
         await page.goto("https://you.com", {waitUntil: 'domcontentloaded'});
-        await sleep(2000);
+        await sleep(1000);
 
         //打印messages完整结构
         // console.log(messages);
@@ -867,14 +860,14 @@ class YouProvider {
 
             // 将格式化后的消息转换为纯文本
             let previousMessages = formattedMessages
-              .map((msg) => {
-                if (!msg.role) {
-                  return msg.content;  // role为空只返回content
-                } else {
-                  return `${msg.role}: ${msg.content}`;
-                }
-              })
-              .join("\n\n");
+                .map((msg) => {
+                    if (!msg.role) {
+                        return msg.content;  // role为空只返回content
+                    } else {
+                        return `${msg.role}: ${msg.content}`;
+                    }
+                })
+                .join("\n\n");
 
             // 插入乱码（如果启用）
             previousMessages = insertGarbledText(previousMessages);
@@ -979,7 +972,13 @@ class YouProvider {
 
             var messageBuffer;
             if (this.uploadFileFormat === 'docx') {
-                messageBuffer = await createDocx(previousMessages);
+                try {
+                    // 尝试将 previousMessages 转换
+                    messageBuffer = await createDocx(previousMessages);
+                } catch (error) {
+                    this.uploadFileFormat = 'txt';
+                    messageBuffer = Buffer.from(previousMessages, 'utf-8');
+                }
             } else {
                 messageBuffer = Buffer.from(previousMessages, 'utf-8');
             }
@@ -1054,9 +1053,8 @@ class YouProvider {
                     window["exit" + traceId]();
                 }
             }, traceId);
-
             if (!this.isSingleSession) {
-                await this.clearYouCookies(page);
+                await clearCookiesNonBlocking(page);
             }
             // 检查请求次数是否达到上限
             if (this.enableRequestLimit && session.youTotalRequests >= this.requestLimit) {
@@ -1455,7 +1453,7 @@ class YouProvider {
             );
         }
 
-        const responseTimeoutTimer = proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" ? 120000 : 60000;
+        const responseTimeoutTimer = proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" ? 120000 : 60000; // 响应超时时间
 
         // 重新发送请求
         async function resendPreviousRequest() {
@@ -1566,6 +1564,8 @@ class YouProvider {
             // 初始执行 setupEventSource
             await setupEventSource(page, url, traceId, customEndMarker);
             session.youTotalRequests = (session.youTotalRequests || 0) + 1; // 增加请求次数
+            // 更新本地配置 cookie
+            updateLocalConfigCookieByEmailNonBlocking(page);
 
         } catch (error) {
             console.error("评估过程中出错:", error);
@@ -1618,4 +1618,23 @@ function extractAndReplaceUserQuery(previousMessages, userQuery) {
     }
 
     return {previousMessages, userQuery};
+}
+
+async function clearCookiesNonBlocking(page) {
+    if (!page.isClosed()) {
+        try {
+            const client = await page.target().createCDPSession();
+            await client.send('Network.clearBrowserCookies');
+            await client.send('Network.clearBrowserCache');
+
+            const cookies = await page.cookies('https://you.com');
+            for (const cookie of cookies) {
+                await page.deleteCookie(cookie);
+            }
+            console.log('已自动清理 cookie');
+            await sleep(4000);
+        } catch (e) {
+            console.error('清理 Cookie 时出错:', e);
+        }
+    }
 }
