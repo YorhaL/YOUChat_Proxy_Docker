@@ -21,6 +21,9 @@ set SESSION_LOCK_TIMEOUT=180
 REM 设置是否启用并发限制
 set ENABLE_DETECTION=true
 
+REM 设置是否启用自动Cookie更新 (USE_MANUAL_LOGIN=false时有效)
+set ENABLE_AUTO_COOKIE_UPDATE=false
+
 REM 是否跳过账户验证 (启用时，`ALLOW_NON_PRO`设置无效，可用于账号量多情况)
 set SKIP_ACCOUNT_VALIDATION=false
 
@@ -88,7 +91,7 @@ REM 设置伪造真role (如果启用，必须使用txt格式上传)
 set USE_BACKSPACE_PREFIX=false
 
 REM 设置上传文件格式 (docx 或 txt) gpt_4o 使用txt可能更好破限
-set UPLOAD_FILE_FORMAT=docx
+set UPLOAD_FILE_FORMAT=txt
 
 REM 设置是否启用 CLEWD 后处理
 set CLEWD_ENABLED=false
