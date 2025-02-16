@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
-import { fileURLToPath } from 'url';
-import { Mutex } from 'async-mutex';
+import {fileURLToPath} from 'url';
+import {Mutex} from 'async-mutex';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -249,29 +249,42 @@ class Logger {
             console.log(`===== 提供者 ${provider} 没有统计数据 =====`);
             return;
         }
-        console.log(`===== 请求统计信息 (${provider}) =====`);
         const emails = Object.keys(this.statistics[provider]).sort();
+        let hasAnyDailyRequest = false;
+
+        console.log(`===== 请求统计信息 (Provider=${provider}) =====`);
+
         for (const email of emails) {
             const stats = this.statistics[provider][email];
-            console.log(`用户邮箱: ${email}`);
-            console.log(`---------- 本月[${monthStartStr}]统计 ----------`);
-            console.log(`总请求次数: ${stats.monthlyStats.totalRequests}`);
-            console.log(`default 请求次数: ${stats.monthlyStats.defaultModeCount}`);
-            console.log(`custom 请求次数: ${stats.monthlyStats.customModeCount}`);
-            console.log('各模型请求次数:');
-            for (const [mdl, count] of Object.entries(stats.monthlyStats.modelCount)) {
-                console.log(`  - ${mdl}: ${count}`);
+            // 当日是否有请求
+            if (stats.dailyStats.totalRequests > 0) {
+                hasAnyDailyRequest = true;
+                console.log(`用户邮箱: ${email}`);
+                console.log(`---------- 本月[自 ${monthStartStr} 起] 统计 ----------`);
+                console.log(`总请求次数: ${stats.monthlyStats.totalRequests}`);
+                console.log(`default 请求次数: ${stats.monthlyStats.defaultModeCount}`);
+                console.log(`custom 请求次数: ${stats.monthlyStats.customModeCount}`);
+                console.log('各模型请求次数:');
+                for (const [mdl, count] of Object.entries(stats.monthlyStats.modelCount)) {
+                    console.log(`  - ${mdl}: ${count}`);
+                }
+
+                console.log(`---------- 今日[${todayStr}]统计 ----------`);
+                console.log(`总请求次数: ${stats.dailyStats.totalRequests}`);
+                console.log(`default 请求次数: ${stats.dailyStats.defaultModeCount}`);
+                console.log(`custom 请求次数: ${stats.dailyStats.customModeCount}`);
+                console.log('各模型请求次数:');
+                for (const [mdl, count] of Object.entries(stats.dailyStats.modelCount)) {
+                    console.log(`  - ${mdl}: ${count}`);
+                }
+                console.log('------------------------------');
             }
-            console.log(`---------- 今日[${todayStr}]统计 ----------`);
-            console.log(`总请求次数: ${stats.dailyStats.totalRequests}`);
-            console.log(`default 请求次数: ${stats.dailyStats.defaultModeCount}`);
-            console.log(`custom 请求次数: ${stats.dailyStats.customModeCount}`);
-            console.log('各模型请求次数:');
-            for (const [mdl, count] of Object.entries(stats.dailyStats.modelCount)) {
-                console.log(`  - ${mdl}: ${count}`);
-            }
-            console.log('------------------------------');
         }
+
+        if (!hasAnyDailyRequest) {
+            console.log(`===== 今日(${todayStr})无任何账号发生请求 =====`);
+        }
+
         console.log('================================');
     }
 }
