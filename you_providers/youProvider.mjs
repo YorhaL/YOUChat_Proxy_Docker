@@ -29,6 +29,7 @@ class YouProvider {
         this.requestLimit = parseInt(process.env.REQUEST_LIMIT, 10) || 3; // 请求次数上限
         this.networkMonitor = new NetworkMonitor();
         this.logger = new Logger();
+        this.isSingleSession = false; // 是否为单账号模式
     }
 
     getRandomSwitchThreshold(session) {
@@ -66,6 +67,8 @@ class YouProvider {
 
         const timeout = 120000;
         this.skipAccountValidation = (process.env.SKIP_ACCOUNT_VALIDATION === "true");
+        // 统计sessions数量
+        let totalSessions = 0;
 
         this.sessionManager = new SessionManager(this);
         await this.sessionManager.initBrowserInstancesInBatch();
@@ -95,7 +98,7 @@ class YouProvider {
                 };
                 delete this.sessions['manual_login'];
                 console.log(`成功获取 ${email} 登录的 cookie (${sessionCookie.isNewVersion ? '新版' : '旧版'})`);
-
+                totalSessions++;
                 // 设置隐身模式 cookie
                 await page.setCookie(...sessionCookie);
                 this.sessionManager.setSessions(this.sessions);
@@ -156,9 +159,15 @@ class YouProvider {
                     console.error(`未检测到有效的DS或stytch_session字段。`);
                 }
             }
-            console.log(`已添加 ${Object.keys(this.sessions).length} 个 cookie`);
+            totalSessions = Object.keys(this.sessions).length;
+            console.log(`已添加 ${totalSessions} 个 cookie`);
+
             this.sessionManager.setSessions(this.sessions);
         }
+
+        // 判断是否单账号模式
+        this.isSingleSession = (totalSessions === 1);
+        console.log(`开启 ${this.isSingleSession ? "单账号模式" : "多账号模式"}`);
 
         // 执行验证
         if (!this.skipAccountValidation) {
@@ -203,13 +212,8 @@ class YouProvider {
         // 统计有效 cookie
         const validSessionsCount = Object.keys(this.sessions).filter(u => this.sessions[u].valid).length;
         console.log(`验证完毕，有效cookie数量 ${validSessionsCount}`);
-
-        // 是否单账号模式
-        this.isSingleSession = (validSessionsCount === 1) || (process.env.USE_MANUAL_LOGIN === "true");
-
         // 开启网络监控
         await this.networkMonitor.startMonitoring();
-        console.log(`开启 ${this.isSingleSession ? "单账号模式" : "多账号模式"}`);
     }
 
     async validateAccounts(browserInstances, accountQueue) {
@@ -695,8 +699,30 @@ class YouProvider {
             ));
         }
 
-        await sleep(1000);
-        await page.goto("https://you.com", {waitUntil: 'domcontentloaded'});
+        await sleep(2000);
+        try {
+            if (page.isClosed()) {
+                console.warn(`[${username}] 页面关闭，重新创建...`);
+            }
+            await page.goto("https://you.com", {waitUntil: 'domcontentloaded'});
+        } catch (err) {
+            if (/detached frame/i.test(err.message)) {
+                console.warn(`[${username}] 检测到页面 Frame 分离。`);
+                try {
+                    console.warn(`[${username}] 重试"https://you.com"...`);
+                    if (!page.isClosed()) {
+                        await page.goto("https://you.com", {waitUntil: 'domcontentloaded'});
+                    } else {
+                        console.error(`[${username}] 页面被彻底关闭。`);
+                    }
+                } catch (retryErr) {
+                    console.error(`[${username}] 重试 page.goto 失败:`, retryErr);
+                    throw retryErr;
+                }
+            } else {
+                throw err;
+            }
+        }
         await sleep(1000);
 
         //打印messages完整结构
@@ -998,34 +1024,38 @@ class YouProvider {
             var uploadedFile = await page.evaluate(
                 async (messageBuffer, nonce, randomFileName, mimeType) => {
                     try {
-                        let blob = new Blob([new Uint8Array(messageBuffer)], {
-                            type: mimeType,
-                        });
-                        let form_data = new FormData();
+                        const blob = new Blob([new Uint8Array(messageBuffer)], {type: mimeType});
+                        const form_data = new FormData();
                         form_data.append("file", blob, randomFileName);
-                        return await fetch("https://you.com/api/upload", {
+                        const resp = await fetch("https://you.com/api/upload", {
                             method: "POST",
-                            headers: {
-                                "X-Upload-Nonce": nonce,
-                            },
+                            headers: {"X-Upload-Nonce": nonce},
                             body: form_data,
-                        }).then((res) => res.json());
+                        });
+                        if (!resp.ok) {
+                            console.error('Server returned non-OK status:', resp.status);
+                        }
+                        return await resp.json();
                     } catch (e) {
                         console.error('Failed to upload file:', e);
                         return null;
                     }
                 },
-                [...messageBuffer],
+                [...messageBuffer], // messageBuffer(ArrayBufferView)
                 fileNonce,
                 randomFileName,
-                this.uploadFileFormat === 'docx' ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "text/plain"
+                this.uploadFileFormat === 'docx'
+                    ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    : "text/plain"
             );
             if (!uploadedFile) {
-                console.error("Failed to upload messages");
+                console.error("Failed to upload messages or parse JSON response.");
+                throw new Error("Upload returned null. Possibly network error or parse error.");
+            } else if (uploadedFile.error) {
+                throw new Error(uploadedFile.error);
             } else {
-                console.log(`Messages uploaded successfully: ${randomFileName}`);
+                console.log(`Messages uploaded successfully as: ${randomFileName}`);
             }
-            if (uploadedFile.error) throw new Error(uploadedFile.error);
         }
 
         let msgid = uuidV4();
