@@ -166,7 +166,7 @@ class YouProvider {
         }
 
         // 判断是否单账号模式
-        this.isSingleSession = (totalSessions === 1);
+        this.isSingleSession = (totalSessions === 1) || (process.env.USE_MANUAL_LOGIN === "true");
         console.log(`开启 ${this.isSingleSession ? "单账号模式" : "多账号模式"}`);
 
         // 执行验证
