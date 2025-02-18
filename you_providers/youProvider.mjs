@@ -65,7 +65,7 @@ class YouProvider {
         console.log(`本项目依赖Chrome或Edge浏览器，请勿关闭弹出的浏览器窗口。如果出现错误请检查是否已安装Chrome或Edge浏览器。`);
 
         const timeout = 120000;
-        this.skipAccountValidation = process.env.SKIP_ACCOUNT_VALIDATION !== "true";
+        this.skipAccountValidation = (process.env.SKIP_ACCOUNT_VALIDATION === "true");
 
         this.sessionManager = new SessionManager(this);
         await this.sessionManager.initBrowserInstancesInBatch();
@@ -159,9 +159,9 @@ class YouProvider {
             console.log(`已添加 ${Object.keys(this.sessions).length} 个 cookie`);
             this.sessionManager.setSessions(this.sessions);
         }
-        const validSessionsCount = Object.keys(this.sessions).filter(username => this.sessions[username].valid).length;
-        this.isSingleSession = (validSessionsCount === 1) || (process.env.USE_MANUAL_LOGIN === "true");
-        if (this.skipAccountValidation) {
+
+        // 执行验证
+        if (!this.skipAccountValidation) {
             console.log(`开始验证cookie有效性...`);
             // 获取浏览器实例列表
             const browserInstances = this.sessionManager.browserInstances;
@@ -199,9 +199,16 @@ class YouProvider {
                 this.sessions[username].valid = true;
             }
         }
-        // 开始网络监控
-        await this.networkMonitor.startMonitoring();
+
+        // 统计有效 cookie
+        const validSessionsCount = Object.keys(this.sessions).filter(u => this.sessions[u].valid).length;
         console.log(`验证完毕，有效cookie数量 ${validSessionsCount}`);
+
+        // 是否单账号模式
+        this.isSingleSession = (validSessionsCount === 1) || (process.env.USE_MANUAL_LOGIN === "true");
+
+        // 开启网络监控
+        await this.networkMonitor.startMonitoring();
         console.log(`开启 ${this.isSingleSession ? "单账号模式" : "多账号模式"}`);
     }
 
@@ -977,10 +984,16 @@ class YouProvider {
                     messageBuffer = await createDocx(previousMessages);
                 } catch (error) {
                     this.uploadFileFormat = 'txt';
-                    messageBuffer = Buffer.from(previousMessages, 'utf-8');
+                    // 为 txt 内容添加 BOM
+                    const bomBuffer = Buffer.from([0xEF, 0xBB, 0xBF]);
+                    const contentBuffer = Buffer.from(previousMessages, 'utf8');
+                    messageBuffer = Buffer.concat([bomBuffer, contentBuffer]);
                 }
             } else {
-                messageBuffer = Buffer.from(previousMessages, 'utf-8');
+                // 在开头拼接 BOM
+                const bomBuffer = Buffer.from([0xEF, 0xBB, 0xBF]);
+                const contentBuffer = Buffer.from(previousMessages, 'utf8');
+                messageBuffer = Buffer.concat([bomBuffer, contentBuffer]);
             }
             var uploadedFile = await page.evaluate(
                 async (messageBuffer, nonce, randomFileName, mimeType) => {
@@ -1040,7 +1053,7 @@ class YouProvider {
 
         // expose function to receive youChatToken
         // 清理逻辑
-        const cleanup = async () => {
+        const cleanup = async (skipClearCookies = false) => {
             clearTimeout(responseTimeout);
             clearTimeout(customEndMarkerTimer);
             clearTimeout(errorTimer);
@@ -1053,7 +1066,7 @@ class YouProvider {
                     window["exit" + traceId]();
                 }
             }, traceId);
-            if (!this.isSingleSession) {
+            if (!this.isSingleSession && !skipClearCookies) {
                 await clearCookiesNonBlocking(page);
             }
             // 检查请求次数是否达到上限
@@ -1459,7 +1472,7 @@ class YouProvider {
         async function resendPreviousRequest() {
             try {
                 // 清理之前的事件
-                await cleanup();
+                await cleanup(true);
 
                 // 重置状态
                 isEnding = false;
@@ -1632,7 +1645,7 @@ async function clearCookiesNonBlocking(page) {
                 await page.deleteCookie(cookie);
             }
             console.log('已自动清理 cookie');
-            await sleep(4000);
+            await sleep(4500);
         } catch (e) {
             console.error('清理 Cookie 时出错:', e);
         }
