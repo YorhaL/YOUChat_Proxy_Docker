@@ -290,11 +290,11 @@ class YouProvider {
                         waitUntil: 'domcontentloaded'
                     });
 
-                    // try {
-                    //     await page.waitForNetworkIdle({timeout: 10000});
-                    // } catch (err) {
-                    //     console.warn(`[${currentUsername}] 等待网络空闲超时`);
-                    // }
+                    try {
+                        await page.waitForNetworkIdle({timeout: 5000});
+                    } catch (err) {
+                        console.warn(`[${currentUsername}] 等待网络空闲超时`);
+                    }
                     // 检测是否为 team 账号
                     session.isTeamAccount = await page.evaluate(() => {
                         let teamElement = document.querySelector('div._15zm0ko1 p._15zm0ko2');
