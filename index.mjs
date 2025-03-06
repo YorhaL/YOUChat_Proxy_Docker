@@ -19,6 +19,7 @@ const availableModels = [
     "openai_o3_mini_medium",
     "openai_o1",
     "openai_o1_preview",
+    "gpt_4_5_preview",
     "gpt_4o",
     "gpt_4_turbo",
     "gpt_4",
