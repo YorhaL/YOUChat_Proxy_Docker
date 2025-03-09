@@ -1,23 +1,24 @@
 import * as docx from "docx";
 import cookie from "cookie";
 import fs from "fs";
-import { execSync } from "child_process";
+import {execSync} from "child_process";
 
 function getGitRevision() {
-	// get git revision and branch
-	try {
-		const revision = execSync("git rev-parse --short HEAD", { stdio: "pipe" }).toString().trim();
-		const branch = execSync("git rev-parse --abbrev-ref HEAD", { stdio: "pipe" }).toString().trim();
-		return { revision, branch };
-	} catch (e) {
-		return { revision: "unknown", branch: "unknown" };
-	}
+    // get git revision and branch
+    try {
+        const revision = execSync("git rev-parse --short HEAD", {stdio: "pipe"}).toString().trim();
+        const branch = execSync("git rev-parse --abbrev-ref HEAD", {stdio: "pipe"}).toString().trim();
+        return {revision, branch};
+    } catch (e) {
+        return {revision: "unknown", branch: "unknown"};
+    }
 }
 
+// 创建目录
 function createDirectoryIfNotExists(dirPath) {
-	if (!fs.existsSync(dirPath)) {
-		fs.mkdirSync(dirPath, { recursive: true });
-	}
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, {recursive: true});
+    }
 }
 
 function extractCookie(cookies) {
@@ -25,17 +26,21 @@ function extractCookie(cookies) {
     let jwtToken = null;
     let ds = null;
     let dsr = null;
+    let you_subscription = null;
+    let youpro_subscription = null;
 
     cookies = cookie.parse(cookies);
     if (cookies["stytch_session"]) jwtSession = cookies["stytch_session"];
     if (cookies["stytch_session_jwt"]) jwtToken = cookies["stytch_session_jwt"];
     if (cookies["DS"]) ds = cookies["DS"];
     if (cookies["DSR"]) dsr = cookies["DSR"];
+    if (cookies["you_subscription"]) you_subscription = cookies["you_subscription"];
+    if (cookies["youpro_subscription"]) youpro_subscription = cookies["youpro_subscription"];
 
-    return { jwtSession, jwtToken, ds, dsr };
+    return {jwtSession, jwtToken, ds, dsr, you_subscription, youpro_subscription};
 }
 
-function getSessionCookie(jwtSession, jwtToken, ds, dsr) {
+function getSessionCookie(jwtSession, jwtToken, ds, dsr, you_subscription, youpro_subscription) {
     let sessionCookie = [];
 
     // 处理旧版 cookie
@@ -110,8 +115,34 @@ function getSessionCookie(jwtSession, jwtToken, ds, dsr) {
         });
     }
 
+    if (you_subscription) {
+        sessionCookie.push({
+            name: "you_subscription",
+            value: you_subscription,
+            domain: "you.com",
+            path: "/",
+            expires: 1800000000,
+            httpOnly: false,
+            secure: true,
+            sameSite: "Lax",
+        });
+    }
+
+    if (youpro_subscription) {
+        sessionCookie.push({
+            name: "youpro_subscription",
+            value: youpro_subscription,
+            domain: "you.com",
+            path: "/",
+            expires: 1800000000,
+            httpOnly: false,
+            secure: true,
+            sameSite: "Lax",
+        });
+    }
+
     // 添加隐身模式 cookie（如果启用）
-    if(process.env.INCOGNITO_MODE === "true") {
+    if (process.env.INCOGNITO_MODE === "true") {
         sessionCookie.push({
             name: "incognito",
             value: "true",
@@ -125,34 +156,36 @@ function getSessionCookie(jwtSession, jwtToken, ds, dsr) {
 }
 
 function sleep(ms) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
 function createDocx(content) {
     let paragraphs = [];
-	content.split("\n").forEach((line) => {
-		paragraphs.push(
-			new docx.Paragraph({
-				children: [new docx.TextRun(line)],
-			})
-		);
-	});
+    content.split("\n").forEach((line) => {
+        paragraphs.push(
+            new docx.Paragraph({
+                children: [new docx.TextRun(line)],
+            })
+        );
+    });
     let doc = new docx.Document({
-		sections: [
-			{
-				properties: {},
-				children: paragraphs,
-			},
-		],
-	});
-	return docx.Packer.toBuffer(doc).then((buffer) => buffer);
+        sections: [
+            {
+                properties: {},
+                children: paragraphs,
+            },
+        ],
+    });
+    return docx.Packer.toBuffer(doc).then((buffer) => buffer);
 }
+
 // eventStream util
 function createEvent(event, data) {
-	// if data is object, stringify it
-	if (typeof data === "object") {
-		data = JSON.stringify(data);
-	}
-	return `event: ${event}\ndata: ${data}\n\n`;
+    // if data is object, stringify it
+    if (typeof data === "object") {
+        data = JSON.stringify(data);
+    }
+    return `event: ${event}\ndata: ${data}\n\n`;
 }
 
 function extractPerplexityCookie(cookieString) {
