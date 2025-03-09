@@ -6,6 +6,9 @@ call npm install
 REM 设置代理的网站：you、perplexity、happyapi
 set ACTIVE_PROVIDER=you
 
+REM 设置指定浏览器,可以是 'chrome', 'edge' 或 'auto'
+set BROWSER_TYPE=auto
+
 REM 设置是否启用手动登录
 set USE_MANUAL_LOGIN=true
 
