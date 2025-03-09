@@ -6,6 +6,9 @@ npm install
 # 设置代理的网站：you、perplexity、happyapi
 export ACTIVE_PROVIDER=you
 
+# 设置指定浏览器,可以是 'chrome', 'edge' 或 'auto'
+export BROWSER_TYPE=auto
+
 # 设置是否启用手动登录
 export USE_MANUAL_LOGIN=true
 
