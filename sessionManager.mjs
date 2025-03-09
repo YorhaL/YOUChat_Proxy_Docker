@@ -149,7 +149,7 @@ class SessionManager {
     async initBrowserInstancesInBatch() {
         const browserCount = parseInt(process.env.BROWSER_INSTANCE_COUNT) || 1;
         // 可以是 'chrome', 'edge', 或 'auto'
-        const browserPath = detectBrowser('auto');
+        const browserPath = detectBrowser(process.env.BROWSER_TYPE || 'auto');
         const sharedProfilePath = path.join(__dirname, 'browser_profiles');
         createDirectoryIfNotExists(sharedProfilePath);
 
