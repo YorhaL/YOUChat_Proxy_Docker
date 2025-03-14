@@ -1,5 +1,5 @@
 import express from "express";
-import {createEvent, getGitRevision} from "./utils.mjs";
+import {createEvent, getGitRevision} from "./utils/cookieUtils.mjs";
 import YouProvider from "./provider.mjs";
 import localtunnel from "localtunnel";
 import ngrok from 'ngrok';
@@ -45,7 +45,7 @@ const availableModels = [
     "deepseek_v3"
 ];
 const modelMappping = {
-    "claude-3-7-sonnet-latest": "claude_3_7_sonnet",
+    "claude-3-7-sonnet-latest": "claude_3_7_sonnet_thinking",
     "claude-3-7-sonnet-20250219": "claude_3_7_sonnet",
     "claude-3-5-sonnet-latest": "claude_3_5_sonnet",
     "claude-3-5-sonnet-20241022": "claude_3_5_sonnet",
@@ -909,7 +909,7 @@ function OpenAIApiKeyAuth(req, res, next) {
     next();
 }
 
-// Path: utils.mjs
+// Path: cookieUtils.mjs
 class ClientState {
     #closed = false;
 
