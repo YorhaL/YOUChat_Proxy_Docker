@@ -3,7 +3,7 @@ import {v4 as uuidV4} from "uuid";
 import path from "path";
 import fs from "fs";
 import {fileURLToPath} from "url";
-import {createDocx, extractCookie, getSessionCookie, sleep} from "../utils.mjs";
+import {createDocx, extractCookie, getSessionCookie, sleep} from "../utils/cookieUtils.mjs";
 import {exec} from 'child_process';
 import '../proxyAgent.mjs';
 import {formatMessages} from '../formatMessages.mjs';
@@ -109,14 +109,30 @@ class YouProvider {
             }
         } else {
             // 使用配置文件中的 cookie
+            // 检查 invalid_accounts 字段
+            const invalidAccounts = config.invalid_accounts || {};
+
             for (let index = 0; index < config.sessions.length; index++) {
                 const session = config.sessions[index];
-                const {jwtSession, jwtToken, ds, dsr, you_subscription, youpro_subscription} = extractCookie(session.cookie);
+                const {
+                    jwtSession,
+                    jwtToken,
+                    ds,
+                    dsr,
+                    you_subscription,
+                    youpro_subscription
+                } = extractCookie(session.cookie);
                 if (jwtSession && jwtToken) {
                     // 旧版cookie处理
                     try {
                         const jwt = JSON.parse(Buffer.from(jwtToken.split(".")[1], "base64").toString());
                         const username = jwt.user.name;
+
+                        if (invalidAccounts[username]) {
+                            console.log(`跳过标记失效账号 #${index} ${username} (${invalidAccounts[username]})`);
+                            continue;
+                        }
+
                         this.sessions[username] = {
                             configIndex: index,
                             jwtSession,
@@ -137,6 +153,12 @@ class YouProvider {
                     try {
                         const jwt = JSON.parse(Buffer.from(ds.split(".")[1], "base64").toString());
                         const username = jwt.email;
+
+                        if (invalidAccounts[username]) {
+                            console.log(`跳过标记失效账号 #${index} ${username} (${invalidAccounts[username]})`);
+                            continue;
+                        }
+
                         this.sessions[username] = {
                             configIndex: index,
                             ds,
@@ -371,12 +393,18 @@ class YouProvider {
                             console.log(`${currentUsername} 无有效订阅`);
                             console.warn(`警告: ${currentUsername} 可能没有有效的订阅。请检查You是否有有效的Pro或Team订阅。`);
                             session.valid = false;
+
+                            // 标记为失效
+                            await markAccountAsInvalid(currentUsername, this.config);
                         }
                     } catch (parseErr) {
                         console.log(`${currentUsername} 已失效 (fetchYouProState 异常)`);
                         console.warn(`警告: ${currentUsername} 验证失败。请检查cookie是否有效。`);
                         console.error(parseErr);
                         session.valid = false;
+
+                        // 标记为失效
+                        await markAccountAsInvalid(currentUsername, this.config);
                     }
                 } catch (errorVisit) {
                     console.error(`验证账户 ${currentUsername} 时出错:`, errorVisit);
@@ -1135,182 +1163,6 @@ class YouProvider {
         let errorCount = 0; // 错误计数器
         const ERROR_TIMEOUT = (proxyModel === "openai_o1" || proxyModel === "openai_o1_preview") ? 60000 : 20000; // 错误超时时间
         const self = this;
-        page.exposeFunction("callback" + traceId, async (event, data) => {
-            if (isEnding) return;
-
-            switch (event) {
-                case "youChatToken": {
-                    data = JSON.parse(data);
-                    let tokenContent = data.youChatToken;
-                    buffer += tokenContent;
-
-                    if (buffer.endsWith('\\') && !buffer.endsWith('\\\\')) {
-                        // 等待下一个字符
-                        break;
-                    }
-                    let processedContent = unescapeContent(buffer);
-                    buffer = '';
-
-                    if (!responseStarted) {
-                        responseStarted = true;
-
-                        startTime = Date.now();
-                        clearTimeout(responseTimeout);
-                        // 自定义终止符延迟触发
-                        customEndMarkerTimer = setTimeout(() => {
-                            customEndMarkerEnabled = true;
-                        }, 20000);
-
-                        // 停止
-                        if (heartbeatInterval) {
-                            clearInterval(heartbeatInterval);
-                            heartbeatInterval = null;
-                        }
-                    }
-
-                    // 重置错误计时器
-                    if (errorTimer) {
-                        clearTimeout(errorTimer);
-                        errorTimer = null;
-                    }
-
-                    // 检测 'unusual query volume'
-                    if (processedContent.includes('unusual query volume')) {
-                        const warningMessage = "您在 you.com 账号的使用已达上限，当前(default/agent)模式已进入冷却期(CD)。请切换模式(default/agent[custom])或耐心等待冷却结束后再继续使用。";
-                        emitter.emit("completion", traceId, warningMessage);
-                        unusualQueryVolumeTriggered = true; // 更新标志位
-
-                        if (self.isRotationEnabled) {
-                            session.modeStatus[session.currentMode] = false;
-                            self.checkAndSwitchMode();
-                            if (Object.values(session.modeStatus).some(status => status)) {
-                                console.log(`模式达到请求上限，已切换模式 ${session.currentMode}，请重试请求。`);
-                            }
-                        } else {
-                            console.log("检测到请求量异常提示，请求终止。");
-                        }
-                        isEnding = true;
-                        // 终止
-                        setTimeout(async () => {
-                            await cleanup();
-                            emitter.emit("end", traceId);
-                        }, 1000);
-                        self.logger.logRequest({
-                            email: username,
-                            time: requestTime,
-                            mode: session.currentMode,
-                            model: proxyModel,
-                            completed: true,
-                            unusualQueryVolume: true,
-                        });
-                        break;
-                    }
-
-                    process.stdout.write(processedContent);
-                    accumulatedResponse += processedContent;
-
-                    if (Date.now() - startTime >= 20000) {
-                        responseAfter20Seconds += processedContent;
-                    }
-
-                    if (stream) {
-                        emitter.emit("completion", traceId, processedContent);
-                    } else {
-                        finalResponse += processedContent;
-                    }
-
-                    // 检查自定义结束标记
-                    if (customEndMarkerEnabled && customEndMarker && checkEndMarker(responseAfter20Seconds, customEndMarker)) {
-                        isEnding = true;
-                        console.log("检测到自定义终止，关闭请求");
-                        setTimeout(async () => {
-                            await cleanup();
-                            emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
-                        }, 1000);
-                        self.logger.logRequest({
-                            email: username,
-                            time: requestTime,
-                            mode: session.currentMode,
-                            model: proxyModel,
-                            completed: true,
-                            unusualQueryVolume: unusualQueryVolumeTriggered,
-                        });
-                    }
-                    break;
-                }
-                case "customEndMarkerEnabled":
-                    customEndMarkerEnabled = true;
-                    break;
-                case "done":
-                    if (isEnding) return;
-                    console.log("请求结束");
-                    isEnding = true;
-                    await cleanup(); // 清理
-                    emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
-                    self.logger.logRequest({
-                        email: username,
-                        time: requestTime,
-                        mode: session.currentMode,
-                        model: proxyModel,
-                        completed: true,
-                        unusualQueryVolume: unusualQueryVolumeTriggered,
-                    });
-                    break;
-                case "error": {
-                    if (isEnding) return; // 已结束则忽略
-
-                    console.error("请求发生错误", data);
-                    errorCount++;
-                    if (errorCount >= 3) {
-                        const errorMessage = "连接中断，未收到服务器响应";
-                        if (errorTimer) {
-                            clearTimeout(errorTimer);
-                            errorTimer = null;
-                        }
-                        isEnding = true;
-                        finalResponse += ` (${errorMessage})`;
-                        await cleanup();
-                        emitter.emit("completion", traceId, errorMessage);
-                        emitter.emit("end", traceId);
-
-                        // 记录日志
-                        self.logger.logRequest({
-                            email: username,
-                            time: requestTime,
-                            mode: session.currentMode,
-                            model: proxyModel,
-                            completed: false,
-                            unusualQueryVolume: unusualQueryVolumeTriggered,
-                        });
-                    } else {
-                        if (errorTimer) {
-                            clearTimeout(errorTimer);
-                        }
-                        errorTimer = setTimeout(async () => {
-                            console.log("连接超时，终止请求");
-                            const errorMessage = "连接中断，未收到服务器响应";
-
-                            emitter.emit("completion", traceId, errorMessage);
-                            finalResponse += ` (${errorMessage})`;
-
-                            isEnding = true;
-                            await cleanup();
-
-                            emitter.emit("end", traceId);
-                            self.logger.logRequest({
-                                email: username,
-                                time: requestTime,
-                                mode: session.currentMode,
-                                model: proxyModel,
-                                completed: false,
-                                unusualQueryVolume: unusualQueryVolumeTriggered,
-                            });
-                        }, ERROR_TIMEOUT);
-                    }
-                    break;
-                }
-            }
-        });
 
         // proxy response
         const req_param = new URLSearchParams();
@@ -1517,7 +1369,7 @@ class YouProvider {
             );
         }
 
-        const responseTimeoutTimer = (proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" || proxyModel === "claude_3_7_sonnet_thinking")? 140000 : 60000; // 响应超时时间
+        const responseTimeoutTimer = (proxyModel === "openai_o1" || proxyModel === "openai_o1_preview" || proxyModel === "claude_3_7_sonnet_thinking") ? 140000 : 60000; // 响应超时时间
 
         // 重新发送请求
         async function resendPreviousRequest() {
@@ -1581,6 +1433,183 @@ class YouProvider {
             if (!enableDelayLogic) {
                 await page.goto(`https://you.com/search?q=&fromSearchBar=true&tbm=youchat&chatMode=${userChatModeId}&cid=c0_${traceId}`, {waitUntil: "domcontentloaded"});
             }
+
+            await page.exposeFunction("callback" + traceId, async (event, data) => {
+                if (isEnding) return;
+
+                switch (event) {
+                    case "youChatToken": {
+                        data = JSON.parse(data);
+                        let tokenContent = data.youChatToken;
+                        buffer += tokenContent;
+
+                        if (buffer.endsWith('\\') && !buffer.endsWith('\\\\')) {
+                            // 等待下一个字符
+                            break;
+                        }
+                        let processedContent = unescapeContent(buffer);
+                        buffer = '';
+
+                        if (!responseStarted) {
+                            responseStarted = true;
+
+                            startTime = Date.now();
+                            clearTimeout(responseTimeout);
+                            // 自定义终止符延迟触发
+                            customEndMarkerTimer = setTimeout(() => {
+                                customEndMarkerEnabled = true;
+                            }, 20000);
+
+                            // 停止
+                            if (heartbeatInterval) {
+                                clearInterval(heartbeatInterval);
+                                heartbeatInterval = null;
+                            }
+                        }
+
+                        // 重置错误计时器
+                        if (errorTimer) {
+                            clearTimeout(errorTimer);
+                            errorTimer = null;
+                        }
+
+                        // 检测 'unusual query volume'
+                        if (processedContent.includes('unusual query volume')) {
+                            const warningMessage = "您在 you.com 账号的使用已达上限，当前(default/agent)模式已进入冷却期(CD)。请切换模式(default/agent[custom])或耐心等待冷却结束后再继续使用。";
+                            emitter.emit("completion", traceId, warningMessage);
+                            unusualQueryVolumeTriggered = true; // 更新标志位
+
+                            if (self.isRotationEnabled) {
+                                session.modeStatus[session.currentMode] = false;
+                                self.checkAndSwitchMode();
+                                if (Object.values(session.modeStatus).some(status => status)) {
+                                    console.log(`模式达到请求上限，已切换模式 ${session.currentMode}，请重试请求。`);
+                                }
+                            } else {
+                                console.log("检测到请求量异常提示，请求终止。");
+                            }
+                            isEnding = true;
+                            // 终止
+                            setTimeout(async () => {
+                                await cleanup();
+                                emitter.emit("end", traceId);
+                            }, 1000);
+                            self.logger.logRequest({
+                                email: username,
+                                time: requestTime,
+                                mode: session.currentMode,
+                                model: proxyModel,
+                                completed: true,
+                                unusualQueryVolume: true,
+                            });
+                            break;
+                        }
+
+                        process.stdout.write(processedContent);
+                        accumulatedResponse += processedContent;
+
+                        if (Date.now() - startTime >= 20000) {
+                            responseAfter20Seconds += processedContent;
+                        }
+
+                        if (stream) {
+                            emitter.emit("completion", traceId, processedContent);
+                        } else {
+                            finalResponse += processedContent;
+                        }
+
+                        // 检查自定义结束标记
+                        if (customEndMarkerEnabled && customEndMarker && checkEndMarker(responseAfter20Seconds, customEndMarker)) {
+                            isEnding = true;
+                            console.log("检测到自定义终止，关闭请求");
+                            setTimeout(async () => {
+                                await cleanup();
+                                emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
+                            }, 1000);
+                            self.logger.logRequest({
+                                email: username,
+                                time: requestTime,
+                                mode: session.currentMode,
+                                model: proxyModel,
+                                completed: true,
+                                unusualQueryVolume: unusualQueryVolumeTriggered,
+                            });
+                        }
+                        break;
+                    }
+                    case "customEndMarkerEnabled":
+                        customEndMarkerEnabled = true;
+                        break;
+                    case "done":
+                        if (isEnding) return;
+                        console.log("请求结束");
+                        isEnding = true;
+                        await cleanup(); // 清理
+                        emitter.emit(stream ? "end" : "completion", traceId, stream ? undefined : finalResponse);
+                        self.logger.logRequest({
+                            email: username,
+                            time: requestTime,
+                            mode: session.currentMode,
+                            model: proxyModel,
+                            completed: true,
+                            unusualQueryVolume: unusualQueryVolumeTriggered,
+                        });
+                        break;
+                    case "error": {
+                        if (isEnding) return; // 已结束则忽略
+
+                        console.error("请求发生错误", data);
+                        errorCount++;
+                        if (errorCount >= 3) {
+                            const errorMessage = "连接中断，未收到服务器响应";
+                            if (errorTimer) {
+                                clearTimeout(errorTimer);
+                                errorTimer = null;
+                            }
+                            isEnding = true;
+                            finalResponse += ` (${errorMessage})`;
+                            await cleanup();
+                            emitter.emit("completion", traceId, errorMessage);
+                            emitter.emit("end", traceId);
+
+                            // 记录日志
+                            self.logger.logRequest({
+                                email: username,
+                                time: requestTime,
+                                mode: session.currentMode,
+                                model: proxyModel,
+                                completed: false,
+                                unusualQueryVolume: unusualQueryVolumeTriggered,
+                            });
+                        } else {
+                            if (errorTimer) {
+                                clearTimeout(errorTimer);
+                            }
+                            errorTimer = setTimeout(async () => {
+                                console.log("连接超时，终止请求");
+                                const errorMessage = "连接中断，未收到服务器响应";
+
+                                emitter.emit("completion", traceId, errorMessage);
+                                finalResponse += ` (${errorMessage})`;
+
+                                isEnding = true;
+                                await cleanup();
+
+                                emitter.emit("end", traceId);
+                                self.logger.logRequest({
+                                    email: username,
+                                    time: requestTime,
+                                    mode: session.currentMode,
+                                    model: proxyModel,
+                                    completed: false,
+                                    unusualQueryVolume: unusualQueryVolumeTriggered,
+                                });
+                            }, ERROR_TIMEOUT);
+                        }
+                        break;
+                    }
+                }
+            });
 
             responseTimeout = setTimeout(async () => {
                 if (!responseStarted && !clientState.isClosed()) {
@@ -1709,4 +1738,21 @@ function randomSelect(input) {
         const randomIndex = Math.floor(Math.random() * words.length);
         return words[randomIndex];
     });
+}
+
+/**
+ * 账号标记失效并保存
+ * @param {string} username - 账号邮箱
+ * @param {Object} config - 配置对象
+ */
+async function markAccountAsInvalid(username, config) {
+    if (!config.invalid_accounts) {
+        config.invalid_accounts = {};
+    }
+    config.invalid_accounts[username] = "已失效";
+    try {
+        fs.writeFileSync("./config.mjs", `export const config = ${JSON.stringify(config, null, 4)}`);
+    } catch (error) {
+        console.error(`保存失效账号信息失败:`, error);
+    }
 }

@@ -1,7 +1,7 @@
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import {execSync} from 'child_process';
 
 export function detectBrowser(preferredBrowser = 'auto') {
     const platform = os.platform();
@@ -20,10 +20,10 @@ export function detectBrowser(preferredBrowser = 'auto') {
         browsers.chrome = findLinuxBrowser('google-chrome');
 
         //Arch下AUR安装的chrome为google-chrome-stable
-        if(browsers.chrome == null){
-            browsers.chrome =  findLinuxBrowser('google-chrome-stable');
+        if (browsers.chrome == null) {
+            browsers.chrome = findLinuxBrowser('google-chrome-stable');
         }
-        
+
         browsers.edge = findLinuxBrowser('microsoft-edge');
     }
 

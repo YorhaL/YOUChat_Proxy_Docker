@@ -2,8 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import {Mutex} from 'async-mutex';
 import {detectBrowser} from './utils/browserDetector.mjs';
-import {createDirectoryIfNotExists} from './utils.mjs';
+import {createDirectoryIfNotExists} from './utils/cookieUtils.mjs';
 import {fileURLToPath} from 'url';
+import {optimizeBrowserDisplay} from './utils/browserDisplayFixer.mjs';
+import {launchEdgeBrowser} from './utils/edgeLauncher.mjs';
+import {setupBrowserFingerprint} from './utils/browserFingerprint.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -172,46 +175,129 @@ class SessionManager {
 
     async launchSingleBrowser(browserId, userDataDir, browserPath) {
         let browser, page;
-        if (isHeadless === false) {
-            // 使用 puppeteer-real-browser
-            const response = await connect({
-                headless: 'auto',
-                turnstile: true,
-                customConfig: {
-                    userDataDir: userDataDir,
+        const isEdge = browserPath.toLowerCase().includes('msedge') ||
+            process.env.BROWSER_TYPE === 'edge';
+        if (isEdge) {
+            try {
+                const debugPort = 9222 + parseInt(browserId.replace('browser_', ''), 10);
+                const result = await launchEdgeBrowser(userDataDir, browserPath, debugPort);
+                browser = result.browser;
+                page = result.page;
+
+                console.log(`Edge浏览器启动成功 (browserId=${browserId})`);
+            } catch (error) {
+                console.error(`原生启动Edge失败:`, error);
+                console.log(`回退标准方式启动浏览器...`);
+            }
+        }
+
+        if (!browser) {
+            if (isHeadless === false) {
+                // 使用 puppeteer-real-browser
+                const response = await connect({
+                    headless: 'auto',
+                    turnstile: true,
+                    customConfig: {
+                        userDataDir: userDataDir,
+                        executablePath: browserPath,
+                        args: [
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--remote-debugging-address=::',
+                            '--window-size=1280,850',
+                            '--force-device-scale-factor=1',
+                        ],
+                    },
+                });
+                browser = response.browser;
+                page = response.page;
+            } else {
+                // 使用 puppeteer-core
+                browser = await puppeteerModule.launch({
+                    headless: this.isHeadless,
                     executablePath: browserPath,
+                    userDataDir: userDataDir,
                     args: [
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
-                        '--remote-debugging-address=::',
+                        '--disable-gpu',
+                        '--disable-dev-shm-usage',
+                        '--remote-debugging-port=0',
+                        '--window-size=1280,850',
+                        '--force-device-scale-factor=1',
                     ],
-                },
-            });
-            browser = response.browser;
-            page = response.page;
-        } else {
-            // 使用 puppeteer-core
-            browser = await puppeteerModule.launch({
-                headless: this.isHeadless,
-                executablePath: browserPath,
-                userDataDir: userDataDir,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-gpu',
-                    '--disable-dev-shm-usage',
-                    '--remote-debugging-port=0',
-                ],
-            });
-            page = await browser.newPage();
+                });
+                page = await browser.newPage();
+            }
         }
 
-        return {
-            id: browserId,
-            browser: browser,
-            page: page,
-            locked: false,
-        };
+        const originalUserAgent = await page.evaluate(() => navigator.userAgent);
+        // console.log(`浏览器 ${browserId} 原始用户代理: ${originalUserAgent}`);
+
+        const browserType = isEdge ? 'edge' : 'chrome';
+        const fingerprint = await setupBrowserFingerprint(page, browserType);
+
+        try {
+            const newUserAgent = await page.evaluate(() => navigator.userAgent);
+            const newPlatform = await page.evaluate(() => navigator.platform);
+            const newCores = await page.evaluate(() => navigator.hardwareConcurrency);
+
+            // console.log(`浏览器 ${browserId} 应用指纹后:`);
+            // console.log(`- 用户代理: ${newUserAgent}`);
+            // console.log(`- 平台: ${newPlatform}`);
+            // console.log(`- CPU核心: ${newCores}`);
+            // console.log(`- 内存: ${fingerprint.ram}GB`);
+            // console.log(`- 设备名称: ${fingerprint.deviceName}`);
+
+            const isActuallyEdge = newUserAgent.includes('Edg');
+
+            // 应用显示优化
+            try {
+                await optimizeBrowserDisplay(page, {
+                    width: 1280,
+                    height: 850,
+                    deviceScaleFactor: 1,
+                    cssScale: 1,
+                    fixHighDpi: true,
+                    isHeadless: this.isHeadless
+                });
+            } catch (error) {
+                console.warn(`显示优化失败:`, error);
+            }
+
+            return {
+                id: browserId,
+                browser: browser,
+                page: page,
+                locked: false,
+                isEdgeBrowser: isActuallyEdge,
+                fingerprint: fingerprint  // 存储指纹信息
+            };
+        } catch (error) {
+            console.error(`验证指纹时出错:`, error);
+
+            try {
+                await optimizeBrowserDisplay(page, {
+                    width: 1280,
+                    height: 850,
+                    deviceScaleFactor: 1,
+                    cssScale: 1,
+                    fixHighDpi: true,
+                    isHeadless: this.isHeadless
+                });
+            } catch (displayError) {
+                console.warn(`显示优化失败:`, displayError);
+            }
+
+            const isActuallyEdge = originalUserAgent.includes('Edg');
+            return {
+                id: browserId,
+                browser: browser,
+                page: page,
+                locked: false,
+                isEdgeBrowser: isActuallyEdge
+            };
+        }
     }
 
     async getAvailableBrowser() {

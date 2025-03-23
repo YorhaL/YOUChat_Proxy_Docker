@@ -3,7 +3,7 @@ import { connect } from "puppeteer-real-browser";
 import { v4 as uuidV4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createDirectoryIfNotExists, sleep, extractPerplexityCookie, getPerplexitySessionCookie } from "../utils.mjs";
+import { createDirectoryIfNotExists, sleep, extractPerplexityCookie, getPerplexitySessionCookie } from "../utils/cookieUtils.mjs";
 import '../proxyAgent.mjs';
 import { detectBrowser } from '../utils/browserDetector.mjs';
 import NetworkMonitor from '../networkMonitor.mjs';
@@ -16,6 +16,7 @@ class PerplexityProvider {
     constructor(config) {
         this.config = config;
         this.sessions = {};
+        // 可以是 'chrome', 'edge', 或 'auto'
         this.preferredBrowser = 'auto';
         this.networkMonitor = new NetworkMonitor();
     }
