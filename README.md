@@ -1,4 +1,3 @@
-```
 # Miaomiaomiao
 
 A proxy for YOU Chat.
@@ -22,4 +21,3 @@ ASK THE ASSISTANT TO HELP YOU DEPLOY ↓
 您的电脑上必须安装有 Google Chrome 或者 Edge 浏览器才能够使用当前分支。旧版已不再维护。
 
 Google Chrome must be installed on your system in order to use this proxy. Previous versions are no longer maintained.
-```
