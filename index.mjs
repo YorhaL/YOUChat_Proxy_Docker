@@ -34,6 +34,7 @@ const availableModels = [
     "gemini_pro",
     "gemini_1_5_pro",
     "gemini_1_5_flash",
+    "gemini_2_5_pro_experimental",
     "databricks_dbrx_instruct",
     "command_r",
     "command_r_plus",
